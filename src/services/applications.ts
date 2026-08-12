@@ -1,5 +1,6 @@
 import {
   collection,
+  deleteDoc,
   doc,
   getDocs,
   limit,
@@ -12,11 +13,12 @@ import {
   type DocumentData,
 } from 'firebase/firestore';
 import { SEED_APPLICATIONS } from '../data/seedApplications';
-import type { LaunchpadApplication, NewApplicationInput } from '../types';
-import { db } from './firebase';
+import type { ApplicationCredential, LaunchpadApplication, NewApplicationInput } from '../types';
+import { db, ensureFirebaseAuth } from './firebase';
 
 const COLLECTION_NAME = 'launchpadApplications';
 const LOCAL_STORAGE_KEY = 'metaphi-launchpad-applications';
+const FIREBASE_TIMEOUT_MS = 8000;
 const seedById = new Map(SEED_APPLICATIONS.map((application) => [application.id, application]));
 
 const sortApplications = (apps: LaunchpadApplication[]) =>
@@ -35,6 +37,64 @@ const cleanCredentialValue = (value: string) =>
     .replace(/^[-:=\s]+/, '')
     .replace(/\s+(?:password|pass|username|user name|id|phone number)\s*[:=-].*$/i, '')
     .trim();
+
+const normalizeUrl = (value?: string) => {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+};
+
+const normalizeCredentials = (
+  credentials: unknown,
+  fallbackUsername?: string,
+  fallbackPassword?: string,
+): ApplicationCredential[] => {
+  if (Array.isArray(credentials)) {
+    const normalized = credentials
+      .map((credential, index) => {
+        if (!credential || typeof credential !== 'object') {
+          return null;
+        }
+
+        const item = credential as Partial<ApplicationCredential>;
+        const username = String(item.username || '').trim();
+        const password = String(item.password || '').trim();
+
+        if (!username && !password) {
+          return null;
+        }
+
+        return {
+          id: String(item.id || `credential-${index + 1}`),
+          username,
+          password,
+        };
+      })
+      .filter(Boolean) as ApplicationCredential[];
+
+    if (normalized.length > 0) {
+      return normalized;
+    }
+  }
+
+  const username = fallbackUsername?.trim() || '';
+  const password = fallbackPassword?.trim() || '';
+
+  return username || password
+    ? [
+        {
+          id: 'credential-1',
+          username,
+          password,
+        },
+      ]
+    : [];
+};
+
+const firstCredential = (credentials: ApplicationCredential[]) => credentials[0];
 
 export const extractCredentials = (description: string) => {
   const text = description.replace(/\s+/g, ' ').trim();
@@ -63,8 +123,14 @@ const isCredentialOnlyDescription = (description: string) => {
 const normalizeApplication = (application: LaunchpadApplication): LaunchpadApplication => {
   const extracted = extractCredentials(application.description);
   const seedApplication = seedById.get(application.id);
-  const username = application.username || extracted.username || seedApplication?.username || undefined;
-  const password = application.password || extracted.password || seedApplication?.password || undefined;
+  const credentials = normalizeCredentials(
+    application.credentials,
+    application.username || extracted.username || seedApplication?.username,
+    application.password || extracted.password || seedApplication?.password,
+  );
+  const primaryCredential = firstCredential(credentials);
+  const username = primaryCredential?.username || undefined;
+  const password = primaryCredential?.password || undefined;
   const description =
     isCredentialOnlyDescription(application.description) && (username || password)
       ? 'No description provided'
@@ -75,6 +141,7 @@ const normalizeApplication = (application: LaunchpadApplication): LaunchpadAppli
     description,
     username,
     password,
+    credentials,
   };
 };
 
@@ -108,13 +175,36 @@ const mapApplication = (id: string, data: DocumentData): LaunchpadApplication =>
     description: String(data.description || 'No description provided'),
     username: data.username ? String(data.username) : undefined,
     password: data.password ? String(data.password) : undefined,
+    credentials: normalizeCredentials(data.credentials, data.username, data.password),
     initials: String(data.initials || makeInitials(String(data.name ?? ''))),
-    url: data.url ? String(data.url) : undefined,
+    url: data.url ? normalizeUrl(String(data.url)) : undefined,
     order: Number(data.order ?? Date.now()),
   }),
 });
 
 const canUseStorage = () => typeof window !== 'undefined' && Boolean(window.localStorage);
+
+const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number): Promise<T> =>
+  Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      globalThis.setTimeout(() => reject(new Error('Firebase request timed out')), timeoutMs);
+    }),
+  ]);
+
+const formatFirebaseError = (error: unknown, action: string) => {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (/permission|insufficient/i.test(message)) {
+    return `Firebase permission denied while ${action}. Update Firestore rules for ${COLLECTION_NAME}.`;
+  }
+
+  if (/timed out/i.test(message)) {
+    return `Firebase timed out while ${action}. Check the Firestore connection and rules.`;
+  }
+
+  return message;
+};
 
 const readLocalApplications = () => {
   if (!canUseStorage()) {
@@ -145,6 +235,49 @@ const writeLocalApplications = (apps: LaunchpadApplication[]) => {
   }
 };
 
+export const makeApplicationFromInput = (input: NewApplicationInput): LaunchpadApplication => {
+  const name = input.name.trim();
+  const description = input.description.trim() || 'No description provided';
+  const credentials = normalizeCredentials(input.credentials, input.username, input.password);
+  const primaryCredential = firstCredential(credentials);
+  const order = Date.now();
+
+  return {
+    id: `${slugify(name)}-${order}`,
+    name,
+    type: input.type,
+    description,
+    username: primaryCredential?.username || undefined,
+    password: primaryCredential?.password || undefined,
+    credentials,
+    initials: makeInitials(name),
+    url: normalizeUrl(input.url),
+    order,
+  };
+};
+
+const makeUpdatedApplication = (
+  currentApplication: LaunchpadApplication,
+  input: NewApplicationInput,
+): LaunchpadApplication => {
+  const name = input.name.trim();
+  const description = input.description.trim() || 'No description provided';
+  const credentials = normalizeCredentials(input.credentials, input.username, input.password);
+  const primaryCredential = firstCredential(credentials);
+
+  return {
+    ...currentApplication,
+    name,
+    type: input.type,
+    description,
+    username: primaryCredential?.username || undefined,
+    password: primaryCredential?.password || undefined,
+    credentials,
+    initials: makeInitials(name),
+    url: normalizeUrl(input.url),
+  };
+};
+
 export const ensureSeedData = async () => {
   const firestore = db;
 
@@ -153,8 +286,9 @@ export const ensureSeedData = async () => {
     return;
   }
 
+  await ensureFirebaseAuth();
   const collectionRef = collection(firestore, COLLECTION_NAME);
-  const existing = await getDocs(query(collectionRef, limit(1)));
+  const existing = await withTimeout(getDocs(query(collectionRef, limit(1))), FIREBASE_TIMEOUT_MS);
 
   if (!existing.empty) {
     return;
@@ -168,7 +302,7 @@ export const ensureSeedData = async () => {
       updatedAt: serverTimestamp(),
     });
   });
-  await batch.commit();
+  await withTimeout(batch.commit(), FIREBASE_TIMEOUT_MS);
 };
 
 export const subscribeApplications = (
@@ -190,6 +324,11 @@ export const subscribeApplications = (
     return () => window.removeEventListener('storage', handleStorage);
   }
 
+  void ensureFirebaseAuth().catch((error: Error) => {
+    onError?.(error);
+    onChange(readLocalApplications());
+  });
+
   const collectionRef = collection(firestore, COLLECTION_NAME);
   return onSnapshot(
     query(collectionRef, orderBy('order', 'asc')),
@@ -203,25 +342,12 @@ export const subscribeApplications = (
   );
 };
 
-export const createApplication = async (input: NewApplicationInput) => {
+export const createApplication = async (
+  input: NewApplicationInput,
+  preparedApplication?: LaunchpadApplication,
+) => {
   const firestore = db;
-  const name = input.name.trim();
-  const description = input.description.trim() || 'No description provided';
-  const url = input.url?.trim();
-  const username = input.username?.trim();
-  const password = input.password?.trim();
-  const order = Date.now();
-  const application: LaunchpadApplication = {
-    id: `${slugify(name)}-${order}`,
-    name,
-    type: input.type,
-    description,
-    username: username || undefined,
-    password: password || undefined,
-    initials: makeInitials(name),
-    url: url || undefined,
-    order,
-  };
+  const application = preparedApplication || makeApplicationFromInput(input);
 
   if (!firestore) {
     const current = readLocalApplications();
@@ -229,11 +355,19 @@ export const createApplication = async (input: NewApplicationInput) => {
     return application;
   }
 
-  await setDoc(doc(firestore, COLLECTION_NAME, application.id), {
-    ...application,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+  await ensureFirebaseAuth();
+  try {
+    await withTimeout(
+      setDoc(doc(firestore, COLLECTION_NAME, application.id), {
+        ...application,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+      FIREBASE_TIMEOUT_MS,
+    );
+  } catch (error) {
+    throw new Error(formatFirebaseError(error, 'saving application'));
+  }
 
   return application;
 };
@@ -243,21 +377,7 @@ export const updateApplication = async (
   input: NewApplicationInput,
 ) => {
   const firestore = db;
-  const name = input.name.trim();
-  const description = input.description.trim() || 'No description provided';
-  const url = input.url?.trim();
-  const username = input.username?.trim();
-  const password = input.password?.trim();
-  const updatedApplication: LaunchpadApplication = {
-    ...currentApplication,
-    name,
-    type: input.type,
-    description,
-    username: username || undefined,
-    password: password || undefined,
-    initials: makeInitials(name),
-    url: url || undefined,
-  };
+  const updatedApplication = makeUpdatedApplication(currentApplication, input);
 
   if (!firestore) {
     const current = readLocalApplications();
@@ -269,14 +389,38 @@ export const updateApplication = async (
     return updatedApplication;
   }
 
-  await setDoc(
-    doc(firestore, COLLECTION_NAME, currentApplication.id),
-    {
-      ...updatedApplication,
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true },
-  );
+  await ensureFirebaseAuth();
+  try {
+    await withTimeout(
+      setDoc(
+        doc(firestore, COLLECTION_NAME, currentApplication.id),
+        {
+          ...updatedApplication,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      ),
+      FIREBASE_TIMEOUT_MS,
+    );
+  } catch (error) {
+    throw new Error(formatFirebaseError(error, 'updating application'));
+  }
 
   return updatedApplication;
+};
+
+export const deleteApplication = async (applicationId: string) => {
+  const firestore = db;
+
+  if (!firestore) {
+    writeLocalApplications(readLocalApplications().filter((application) => application.id !== applicationId));
+    return;
+  }
+
+  await ensureFirebaseAuth();
+  try {
+    await withTimeout(deleteDoc(doc(firestore, COLLECTION_NAME, applicationId)), FIREBASE_TIMEOUT_MS);
+  } catch (error) {
+    throw new Error(formatFirebaseError(error, 'deleting application'));
+  }
 };

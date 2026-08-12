@@ -27,7 +27,9 @@ import {
 import { SEED_APPLICATIONS } from './data/seedApplications';
 import {
   createApplication,
+  deleteApplication,
   ensureSeedData,
+  makeApplicationFromInput,
   subscribeApplications,
   updateApplication,
 } from './services/applications';
@@ -43,6 +45,7 @@ import {
 } from './services/users';
 import type {
   ApplicationType,
+  ApplicationCredential,
   CurrentUser,
   LaunchpadApplication,
   LaunchpadUser,
@@ -78,14 +81,21 @@ const typeMeta: Record<ApplicationType, { className: string; title: string }> = 
 
 const accentClasses = ['violet', 'mint', 'rose', 'cyan', 'green', 'pink', 'sky', 'amber'];
 
-const emptyForm: NewApplicationInput = {
+const createCredential = (): ApplicationCredential => ({
+  id: `credential-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  username: '',
+  password: '',
+});
+
+const createEmptyApplicationForm = (): NewApplicationInput => ({
   name: '',
   url: '',
   type: 'Wireframe',
   username: '',
   password: '',
+  credentials: [createCredential()],
   description: '',
-};
+});
 
 const emptyUserForm: NewUserInput = {
   name: '',
@@ -122,9 +132,72 @@ const toFormInput = (application: LaunchpadApplication): NewApplicationInput => 
   type: application.type,
   username: application.username || '',
   password: application.password || '',
+  credentials:
+    application.credentials && application.credentials.length > 0
+      ? application.credentials.map((credential) => ({
+          id: credential.id || createCredential().id,
+          username: credential.username || '',
+          password: credential.password || '',
+        }))
+      : [
+          {
+            id: createCredential().id,
+            username: application.username || '',
+            password: application.password || '',
+          },
+        ],
   description:
     application.description === 'No description provided' ? '' : application.description,
 });
+
+const mergeApplication = (
+  applications: LaunchpadApplication[],
+  nextApplication: LaunchpadApplication,
+) => {
+  const exists = applications.some((application) => application.id === nextApplication.id);
+  const nextApplications = exists
+    ? applications.map((application) =>
+        application.id === nextApplication.id ? nextApplication : application,
+      )
+    : [...applications, nextApplication];
+
+  return nextApplications.sort(
+    (left, right) => left.order - right.order || left.name.localeCompare(right.name),
+  );
+};
+
+const removeApplication = (applications: LaunchpadApplication[], applicationId: string) =>
+  applications.filter((application) => application.id !== applicationId);
+
+const getExternalUrl = (url?: string) => {
+  const trimmed = url?.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  return /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+};
+
+const openProjectInNewTab = (url?: string) => {
+  const externalUrl = getExternalUrl(url);
+  if (externalUrl) {
+    window.open(externalUrl, '_blank', 'noopener,noreferrer');
+  }
+};
+
+const getApplicationCredentials = (application: LaunchpadApplication): ApplicationCredential[] => {
+  if (application.credentials && application.credentials.length > 0) {
+    return application.credentials;
+  }
+
+  return [
+    {
+      id: 'credential-1',
+      username: application.username || '',
+      password: application.password || '',
+    },
+  ];
+};
 
 function App() {
   const [currentUser, setCurrentUser] = useState<CurrentUser | null>(() => getStoredUser());
@@ -136,9 +209,9 @@ function App() {
   const [users, setUsers] = useState<LaunchpadUser[]>(DEFAULT_USERS);
   const [dataError, setDataError] = useState('');
   const [isAddOpen, setIsAddOpen] = useState(false);
-  const [form, setForm] = useState<NewApplicationInput>(emptyForm);
+  const [form, setForm] = useState<NewApplicationInput>(() => createEmptyApplicationForm());
   const [editingApplication, setEditingApplication] = useState<LaunchpadApplication | null>(null);
-  const [editForm, setEditForm] = useState<NewApplicationInput>(emptyForm);
+  const [editForm, setEditForm] = useState<NewApplicationInput>(() => createEmptyApplicationForm());
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<LaunchpadUser | null>(null);
   const [userForm, setUserForm] = useState<NewUserInput>(emptyUserForm);
@@ -151,6 +224,7 @@ function App() {
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>('launcher');
   const [activeApplicationTab, setActiveApplicationTab] = useState<ApplicationTab>('All');
+  const [projectSearch, setProjectSearch] = useState('');
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const isAuthenticated = Boolean(currentUser);
   const isAdmin = currentUser?.role === 'admin';
@@ -275,13 +349,36 @@ function App() {
     return applications.filter((application) => allowedAppIds.has(application.id));
   }, [applications, currentUser?.mappedAppIds, isAdmin]);
 
-  const tabApplications = useMemo(() => {
-    if (activeApplicationTab === 'All') {
+  const searchedApplications = useMemo(() => {
+    const queryText = projectSearch.trim().toLowerCase();
+    if (!queryText) {
       return visibleApplications;
     }
 
-    return visibleApplications.filter((application) => application.type === activeApplicationTab);
-  }, [activeApplicationTab, visibleApplications]);
+    return visibleApplications.filter((application) =>
+      [
+        application.name,
+        application.description,
+        application.type,
+        application.url || '',
+        ...(application.credentials || []).flatMap((credential) => [
+          credential.username,
+          credential.password,
+        ]),
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(queryText),
+    );
+  }, [projectSearch, visibleApplications]);
+
+  const tabApplications = useMemo(() => {
+    if (activeApplicationTab === 'All') {
+      return searchedApplications;
+    }
+
+    return searchedApplications.filter((application) => application.type === activeApplicationTab);
+  }, [activeApplicationTab, searchedApplications]);
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -435,7 +532,7 @@ function App() {
   };
 
   const resetAddForm = () => {
-    setForm(emptyForm);
+    setForm(createEmptyApplicationForm());
     setIsSelectOpen(false);
   };
 
@@ -446,7 +543,7 @@ function App() {
 
   const closeEditModal = () => {
     setEditingApplication(null);
-    setEditForm(emptyForm);
+    setEditForm(createEmptyApplicationForm());
     setIsEditSelectOpen(false);
   };
 
@@ -472,11 +569,17 @@ function App() {
     }
 
     setIsSaving(true);
+    const created = makeApplicationFromInput(form);
+    setApplications((current) => mergeApplication(current, created));
+    setActiveApplicationTab(created.type);
+    closeAddModal();
+    setNotification('Saving application...');
+
     try {
-      await createApplication(form);
-      closeAddModal();
+      await createApplication(form, created);
       setNotification('Application added successfully');
     } catch (error) {
+      setApplications((current) => removeApplication(current, created.id));
       setNotification(error instanceof Error ? error.message : 'Unable to save application');
     } finally {
       setIsSaving(false);
@@ -497,6 +600,7 @@ function App() {
     setIsSaving(true);
     try {
       const updated = await updateApplication(editingApplication, editForm);
+      setApplications((current) => mergeApplication(current, updated));
       closeEditModal();
       setSelectedApplication(updated);
       setNotification('Application updated successfully');
@@ -504,6 +608,31 @@ function App() {
       setNotification(error instanceof Error ? error.message : 'Unable to update application');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleDeleteApplication = async (application: LaunchpadApplication) => {
+    if (!isAdmin) {
+      setNotification('Only admins can delete applications');
+      return;
+    }
+
+    const shouldDelete = window.confirm(`Delete ${application.name}?`);
+    if (!shouldDelete) {
+      return;
+    }
+
+    const previousApplications = applications;
+    setApplications((current) => removeApplication(current, application.id));
+    setSelectedApplication(null);
+    setNotification('Deleting application...');
+
+    try {
+      await deleteApplication(application.id);
+      setNotification('Application deleted successfully');
+    } catch (error) {
+      setApplications(previousApplications);
+      setNotification(error instanceof Error ? error.message : 'Unable to delete application');
     }
   };
 
@@ -689,12 +818,26 @@ function App() {
 
             {dataError ? <div className="data-error">{dataError}</div> : null}
 
+            <div className="project-search-shell">
+              <Search size={17} />
+              <input
+                aria-label="Search projects"
+                className="project-search-input"
+                placeholder="Search projects..."
+                value={projectSearch}
+                onChange={(event) => {
+                  setProjectSearch(event.target.value);
+                  setActiveApplicationTab('All');
+                }}
+              />
+            </div>
+
             <div className="application-tabs" role="tablist" aria-label="Application stages">
               {APPLICATION_TABS.map((tab) => {
                 const tabCount =
                   tab === 'All'
-                    ? visibleApplications.length
-                    : visibleApplications.filter((application) => application.type === tab).length;
+                    ? searchedApplications.length
+                    : searchedApplications.filter((application) => application.type === tab).length;
                 const tabClass = tab === 'All' ? 'all' : typeMeta[tab].className;
 
                 return (
@@ -734,6 +877,7 @@ function App() {
           <ApplicationsManagementView
             applications={applications}
             onAdd={() => setIsAddOpen(true)}
+            onDelete={handleDeleteApplication}
             onEdit={startEditApplication}
             onView={setSelectedApplication}
           />
@@ -784,6 +928,7 @@ function App() {
           canEdit={isAdmin}
           onClose={() => setSelectedApplication(null)}
           onCopy={handleCopy}
+          onDelete={handleDeleteApplication}
           onEdit={startEditApplication}
         />
       ) : null}
@@ -816,6 +961,7 @@ function ApplicationCard({
 }) {
   const typeClass = typeMeta[application.type].className;
   const accentClass = accentClasses[index % accentClasses.length];
+  const externalUrl = getExternalUrl(application.url);
 
   return (
     <article
@@ -832,14 +978,14 @@ function ApplicationCard({
     >
       <div className="card-topline">
         <div className={`initials-badge ${accentClass}`}>{application.initials}</div>
-        {application.url ? (
+        {externalUrl ? (
           <button
             className="external-button"
             type="button"
             aria-label={`Open ${application.name}`}
             onClick={(event) => {
               event.stopPropagation();
-              window.open(application.url, '_blank', 'noopener,noreferrer');
+              openProjectInNewTab(application.url);
             }}
           >
             <ExternalLink size={14} />
@@ -857,11 +1003,13 @@ function ApplicationCard({
 function ApplicationsManagementView({
   applications,
   onAdd,
+  onDelete,
   onEdit,
   onView,
 }: {
   applications: LaunchpadApplication[];
   onAdd: () => void;
+  onDelete: (application: LaunchpadApplication) => void;
   onEdit: (application: LaunchpadApplication) => void;
   onView: (application: LaunchpadApplication) => void;
 }) {
@@ -909,16 +1057,25 @@ function ApplicationsManagementView({
                   </span>
                 </td>
                 <td>
-                  {application.url ? (
-                    <span className="table-url">{application.url}</span>
+                  {getExternalUrl(application.url) ? (
+                    <span className="table-url">{getExternalUrl(application.url)}</span>
                   ) : (
                     <span className="muted-text">No URL</span>
                   )}
                 </td>
                 <td>
                   <span className="credentials-summary">
-                    {application.username ? 'Username saved' : 'No username'}
-                    <span>{application.password ? 'Password saved' : 'No password'}</span>
+                    {getApplicationCredentials(application).filter(
+                      (credential) => credential.username || credential.password,
+                    ).length || 'No'} credential
+                    {getApplicationCredentials(application).filter(
+                      (credential) => credential.username || credential.password,
+                    ).length === 1
+                      ? ''
+                      : 's'}
+                    <span>
+                      {getApplicationCredentials(application)[0]?.username || 'No username'}
+                    </span>
                   </span>
                 </td>
                 <td>
@@ -947,11 +1104,20 @@ function ApplicationsManagementView({
                         type="button"
                         aria-label={`Open ${application.name}`}
                         title="Open Project"
-                        onClick={() => window.open(application.url, '_blank', 'noopener,noreferrer')}
+                        onClick={() => openProjectInNewTab(application.url)}
                       >
                         <ExternalLink size={16} />
                       </button>
                     ) : null}
+                    <button
+                      className="table-action-button danger"
+                      type="button"
+                      aria-label={`Delete ${application.name}`}
+                      title="Delete Application"
+                      onClick={() => onDelete(application)}
+                    >
+                      <Trash2 size={16} />
+                    </button>
                   </div>
                 </td>
               </tr>
@@ -1355,6 +1521,40 @@ function ApplicationFormModal({
 
   const title = mode === 'create' ? 'Add Application' : 'Edit Application';
   const actionLabel = mode === 'create' ? 'Save Application' : 'Update Application';
+  const credentials = form.credentials && form.credentials.length > 0 ? form.credentials : [createCredential()];
+
+  const updateCredential = (
+    credentialId: string,
+    field: keyof Pick<ApplicationCredential, 'username' | 'password'>,
+    value: string,
+  ) => {
+    setForm((current) => ({
+      ...current,
+      credentials: (current.credentials || []).map((credential) =>
+        credential.id === credentialId ? { ...credential, [field]: value } : credential,
+      ),
+    }));
+  };
+
+  const addCredential = () => {
+    setForm((current) => ({
+      ...current,
+      credentials: [...(current.credentials || []), createCredential()],
+    }));
+  };
+
+  const removeCredential = (credentialId: string) => {
+    setForm((current) => {
+      const nextCredentials = (current.credentials || []).filter(
+        (credential) => credential.id !== credentialId,
+      );
+
+      return {
+        ...current,
+        credentials: nextCredentials.length > 0 ? nextCredentials : [createCredential()],
+      };
+    });
+  };
 
   return (
     <div className="modal-backdrop" role="presentation">
@@ -1426,26 +1626,49 @@ function ApplicationFormModal({
             ) : null}
           </div>
 
-          <div className="credentials-row">
-            <label className="field-block credential-field">
-              <span>User Name</span>
-              <CredentialInput
-                ariaLabel="User Name"
-                value={form.username || ''}
-                onChange={(value) => setForm((current) => ({ ...current, username: value }))}
-                onCopy={() => onCopy('User name', form.username)}
-              />
-            </label>
+          <div className="credentials-section">
+            <div className="credentials-section-heading">
+              <span>Credentials</span>
+              <button type="button" onClick={addCredential}>
+                <Plus size={14} />
+                Add
+              </button>
+            </div>
 
-            <label className="field-block credential-field">
-              <span>Password</span>
-              <CredentialInput
-                ariaLabel="Password"
-                value={form.password || ''}
-                onChange={(value) => setForm((current) => ({ ...current, password: value }))}
-                onCopy={() => onCopy('Password', form.password)}
-              />
-            </label>
+            {credentials.map((credential, index) => (
+              <div className="credentials-row" key={credential.id}>
+                <label className="field-block credential-field">
+                  <span>User Name {credentials.length > 1 ? index + 1 : ''}</span>
+                  <CredentialInput
+                    ariaLabel="User Name"
+                    value={credential.username}
+                    onChange={(value) => updateCredential(credential.id, 'username', value)}
+                    onCopy={() => onCopy('User name', credential.username)}
+                  />
+                </label>
+
+                <label className="field-block credential-field">
+                  <span>Password {credentials.length > 1 ? index + 1 : ''}</span>
+                  <CredentialInput
+                    ariaLabel="Password"
+                    value={credential.password}
+                    onChange={(value) => updateCredential(credential.id, 'password', value)}
+                    onCopy={() => onCopy('Password', credential.password)}
+                  />
+                </label>
+
+                {credentials.length > 1 ? (
+                  <button
+                    className="credential-remove-button"
+                    type="button"
+                    aria-label={`Remove credential ${index + 1}`}
+                    onClick={() => removeCredential(credential.id)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                ) : null}
+              </div>
+            ))}
           </div>
 
           <label className="field-block description-field">
@@ -1513,14 +1736,19 @@ function ProjectDetailsModal({
   canEdit,
   onClose,
   onCopy,
+  onDelete,
   onEdit,
 }: {
   application: LaunchpadApplication;
   canEdit: boolean;
   onClose: () => void;
   onCopy: (label: string, value?: string) => void;
+  onDelete: (application: LaunchpadApplication) => void;
   onEdit: (application: LaunchpadApplication) => void;
 }) {
+  const credentials = getApplicationCredentials(application);
+  const externalUrl = getExternalUrl(application.url);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -1565,24 +1793,31 @@ function ProjectDetailsModal({
             <input className="input-control" readOnly value={application.type} />
           </label>
 
-          <div className="credentials-row">
-            <label className="field-block credential-field">
-              <span>User Name</span>
-              <CredentialInput
-                ariaLabel="User Name"
-                value={application.username || ''}
-                onCopy={() => onCopy('User name', application.username)}
-              />
-            </label>
+          <div className="credentials-section readonly-credentials">
+            <div className="credentials-section-heading">
+              <span>Credentials</span>
+            </div>
+            {credentials.map((credential, index) => (
+              <div className="credentials-row" key={credential.id}>
+                <label className="field-block credential-field">
+                  <span>User Name {credentials.length > 1 ? index + 1 : ''}</span>
+                  <CredentialInput
+                    ariaLabel="User Name"
+                    value={credential.username}
+                    onCopy={() => onCopy('User name', credential.username)}
+                  />
+                </label>
 
-            <label className="field-block credential-field">
-              <span>Password</span>
-              <CredentialInput
-                ariaLabel="Password"
-                value={application.password || ''}
-                onCopy={() => onCopy('Password', application.password)}
-              />
-            </label>
+                <label className="field-block credential-field">
+                  <span>Password {credentials.length > 1 ? index + 1 : ''}</span>
+                  <CredentialInput
+                    ariaLabel="Password"
+                    value={credential.password}
+                    onCopy={() => onCopy('Password', credential.password)}
+                  />
+                </label>
+              </div>
+            ))}
           </div>
 
           <label className="field-block description-field">
@@ -1593,15 +1828,20 @@ function ProjectDetailsModal({
 
         <div className="modal-actions">
           {canEdit ? (
-            <button className="secondary-button" type="button" onClick={() => onEdit(application)}>
-              Edit Application
-            </button>
+            <>
+              <button className="danger-button" type="button" onClick={() => onDelete(application)}>
+                Delete
+              </button>
+              <button className="secondary-button" type="button" onClick={() => onEdit(application)}>
+                Edit Application
+              </button>
+            </>
           ) : null}
-          {application.url ? (
+          {externalUrl ? (
             <button
               className="secondary-button"
               type="button"
-              onClick={() => window.open(application.url, '_blank', 'noopener,noreferrer')}
+              onClick={() => openProjectInNewTab(application.url)}
             >
               Open Project
             </button>

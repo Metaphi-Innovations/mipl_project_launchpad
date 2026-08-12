@@ -1,6 +1,12 @@
 export type ApplicationType = 'Wireframe' | 'Prototype' | 'Staged Application' | 'Deployed';
 export type UserRole = 'admin' | 'user';
 
+export interface ApplicationCredential {
+  id: string;
+  username: string;
+  password: string;
+}
+
 export interface LaunchpadApplication {
   id: string;
   name: string;
@@ -8,6 +14,7 @@ export interface LaunchpadApplication {
   description: string;
   username?: string;
   password?: string;
+  credentials?: ApplicationCredential[];
   initials: string;
   url?: string;
   order: number;
@@ -19,6 +26,7 @@ export interface NewApplicationInput {
   description: string;
   username?: string;
   password?: string;
+  credentials: ApplicationCredential[];
   url?: string;
 }
 

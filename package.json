@@ -1,15 +1,18 @@
 {
-  "name": "metaphi-launchpad-clone",
+  "name": "metaphi-launchpad",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
+    "firebase:login": "firebase login",
+    "firebase:rules": "firebase deploy --only firestore:rules --project project-4df04",
     "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
     "firebase": "^12.17.1",
+    "firebase-tools": "^15.26.0",
     "lucide-react": "^0.539.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"

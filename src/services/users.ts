@@ -14,10 +14,11 @@ import {
 } from 'firebase/firestore';
 import { SEED_APPLICATIONS } from '../data/seedApplications';
 import type { CurrentUser, LaunchpadUser, NewUserInput, UserRole } from '../types';
-import { db } from './firebase';
+import { db, ensureFirebaseAuth } from './firebase';
 
 const COLLECTION_NAME = 'launchpadUsers';
 const LOCAL_STORAGE_KEY = 'metaphi-launchpad-users';
+const FIREBASE_TIMEOUT_MS = 8000;
 
 export const DEFAULT_USERS: LaunchpadUser[] = [
   {
@@ -67,9 +68,23 @@ const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number): Promise<
   Promise.race([
     promise,
     new Promise<T>((_, reject) => {
-      window.setTimeout(() => reject(new Error('Firebase request timed out')), timeoutMs);
+      globalThis.setTimeout(() => reject(new Error('Firebase request timed out')), timeoutMs);
     }),
   ]);
+
+const formatFirebaseError = (error: unknown, action: string) => {
+  const message = error instanceof Error ? error.message : String(error);
+
+  if (/permission|insufficient/i.test(message)) {
+    return `Firebase permission denied while ${action}. Update Firestore rules for ${COLLECTION_NAME}.`;
+  }
+
+  if (/timed out/i.test(message)) {
+    return `Firebase timed out while ${action}. Check the Firestore connection and rules.`;
+  }
+
+  return message;
+};
 
 const mapUser = (id: string, data: DocumentData): LaunchpadUser =>
   normalizeUser({
@@ -126,8 +141,9 @@ export const ensureUserData = async () => {
     return;
   }
 
+  await ensureFirebaseAuth();
   const collectionRef = collection(firestore, COLLECTION_NAME);
-  const existing = await getDocs(query(collectionRef, limit(1)));
+  const existing = await withTimeout(getDocs(query(collectionRef, limit(1))), FIREBASE_TIMEOUT_MS);
 
   if (!existing.empty) {
     return;
@@ -141,7 +157,7 @@ export const ensureUserData = async () => {
       updatedAt: serverTimestamp(),
     });
   });
-  await batch.commit();
+  await withTimeout(batch.commit(), FIREBASE_TIMEOUT_MS);
 };
 
 export const subscribeUsers = (
@@ -162,6 +178,11 @@ export const subscribeUsers = (
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
   }
+
+  void ensureFirebaseAuth().catch((error: Error) => {
+    onError?.(error);
+    onChange(readLocalUsers());
+  });
 
   const collectionRef = collection(firestore, COLLECTION_NAME);
   return onSnapshot(
@@ -186,6 +207,7 @@ export const authenticateUser = async (email: string, password: string) => {
     try {
       users = await withTimeout(
         (async () => {
+          await ensureFirebaseAuth();
           await ensureUserData();
           return sortUsers(
             (await getDocs(query(collection(firestore, COLLECTION_NAME)))).docs.map((item) =>
@@ -228,11 +250,14 @@ export const createUser = async (input: NewUserInput) => {
     throw new Error('Name, email, and password are required');
   }
 
-  const currentUsers = firestore
-    ? (await getDocs(query(collection(firestore, COLLECTION_NAME)))).docs.map((item) =>
-        mapUser(item.id, item.data()),
-      )
-    : readLocalUsers();
+  let currentUsers = readLocalUsers();
+
+  if (firestore) {
+    await ensureFirebaseAuth();
+    currentUsers = (
+      await withTimeout(getDocs(query(collection(firestore, COLLECTION_NAME))), FIREBASE_TIMEOUT_MS)
+    ).docs.map((item) => mapUser(item.id, item.data()));
+  }
 
   if (currentUsers.some((item) => item.email.toLowerCase() === user.email)) {
     throw new Error('User email already exists');
@@ -243,11 +268,18 @@ export const createUser = async (input: NewUserInput) => {
     return user;
   }
 
-  await setDoc(doc(firestore, COLLECTION_NAME, user.id), {
-    ...user,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+  try {
+    await withTimeout(
+      setDoc(doc(firestore, COLLECTION_NAME, user.id), {
+        ...user,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+      FIREBASE_TIMEOUT_MS,
+    );
+  } catch (error) {
+    throw new Error(formatFirebaseError(error, 'saving user'));
+  }
 
   return user;
 };
@@ -260,11 +292,14 @@ export const updateUser = async (currentUser: LaunchpadUser, input: NewUserInput
     throw new Error('Name, email, and password are required');
   }
 
-  const currentUsers = firestore
-    ? (await getDocs(query(collection(firestore, COLLECTION_NAME)))).docs.map((item) =>
-        mapUser(item.id, item.data()),
-      )
-    : readLocalUsers();
+  let currentUsers = readLocalUsers();
+
+  if (firestore) {
+    await ensureFirebaseAuth();
+    currentUsers = (
+      await withTimeout(getDocs(query(collection(firestore, COLLECTION_NAME))), FIREBASE_TIMEOUT_MS)
+    ).docs.map((item) => mapUser(item.id, item.data()));
+  }
 
   if (
     currentUsers.some(
@@ -279,14 +314,21 @@ export const updateUser = async (currentUser: LaunchpadUser, input: NewUserInput
     return user;
   }
 
-  await setDoc(
-    doc(firestore, COLLECTION_NAME, currentUser.id),
-    {
-      ...user,
-      updatedAt: serverTimestamp(),
-    },
-    { merge: true },
-  );
+  try {
+    await withTimeout(
+      setDoc(
+        doc(firestore, COLLECTION_NAME, currentUser.id),
+        {
+          ...user,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      ),
+      FIREBASE_TIMEOUT_MS,
+    );
+  } catch (error) {
+    throw new Error(formatFirebaseError(error, 'updating user'));
+  }
 
   return user;
 };
@@ -299,5 +341,10 @@ export const deleteUser = async (userId: string) => {
     return;
   }
 
-  await deleteDoc(doc(firestore, COLLECTION_NAME, userId));
+  await ensureFirebaseAuth();
+  try {
+    await withTimeout(deleteDoc(doc(firestore, COLLECTION_NAME, userId)), FIREBASE_TIMEOUT_MS);
+  } catch (error) {
+    throw new Error(formatFirebaseError(error, 'deleting user'));
+  }
 };
