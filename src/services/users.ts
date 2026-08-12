@@ -9,37 +9,14 @@ import {
   query,
   serverTimestamp,
   setDoc,
-  writeBatch,
   type DocumentData,
 } from 'firebase/firestore';
-import { SEED_APPLICATIONS } from '../data/seedApplications';
 import type { CurrentUser, LaunchpadUser, NewUserInput, UserRole } from '../types';
 import { db, ensureFirebaseAuth } from './firebase';
 
 const COLLECTION_NAME = 'launchpadUsers';
 const LOCAL_STORAGE_KEY = 'metaphi-launchpad-users';
 const FIREBASE_TIMEOUT_MS = 8000;
-
-export const DEFAULT_USERS: LaunchpadUser[] = [
-  {
-    id: 'demo-admin',
-    name: 'Demo Admin',
-    email: 'admin@metaphi.in',
-    password: 'password',
-    role: 'admin',
-    mappedAppIds: [],
-    order: 1,
-  },
-  {
-    id: 'demo-user',
-    name: 'Demo User',
-    email: 'user@metaphi.in',
-    password: 'password',
-    role: 'user',
-    mappedAppIds: SEED_APPLICATIONS.map((application) => application.id),
-    order: 2,
-  },
-];
 
 const slugify = (value: string) =>
   value
@@ -99,15 +76,40 @@ const mapUser = (id: string, data: DocumentData): LaunchpadUser =>
 
 const canUseStorage = () => typeof window !== 'undefined' && Boolean(window.localStorage);
 
+const getBootstrapAdmin = (): LaunchpadUser | null => {
+  const email = import.meta.env.VITE_BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
+  const password = import.meta.env.VITE_BOOTSTRAP_ADMIN_PASSWORD?.trim();
+
+  if (!email || !password) {
+    return null;
+  }
+
+  return {
+    id: 'bootstrap-admin',
+    name: import.meta.env.VITE_BOOTSTRAP_ADMIN_NAME?.trim() || 'Admin',
+    email,
+    password,
+    role: 'admin',
+    mappedAppIds: [],
+    order: 1,
+  };
+};
+
+const getInitialUsers = () => {
+  const bootstrapAdmin = getBootstrapAdmin();
+  return bootstrapAdmin ? [bootstrapAdmin] : [];
+};
+
 const readLocalUsers = () => {
   if (!canUseStorage()) {
-    return DEFAULT_USERS;
+    return getInitialUsers();
   }
 
   const stored = window.localStorage.getItem(LOCAL_STORAGE_KEY);
   if (!stored) {
-    window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(DEFAULT_USERS));
-    return DEFAULT_USERS;
+    const initialUsers = getInitialUsers();
+    window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(initialUsers));
+    return initialUsers;
   }
 
   try {
@@ -115,8 +117,9 @@ const readLocalUsers = () => {
     window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(users));
     return users;
   } catch {
-    window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(DEFAULT_USERS));
-    return DEFAULT_USERS;
+    const initialUsers = getInitialUsers();
+    window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(initialUsers));
+    return initialUsers;
   }
 };
 
@@ -149,15 +152,19 @@ export const ensureUserData = async () => {
     return;
   }
 
-  const batch = writeBatch(firestore);
-  DEFAULT_USERS.forEach((user) => {
-    batch.set(doc(firestore, COLLECTION_NAME, user.id), {
-      ...user,
+  const bootstrapAdmin = getBootstrapAdmin();
+  if (!bootstrapAdmin) {
+    return;
+  }
+
+  await withTimeout(
+    setDoc(doc(firestore, COLLECTION_NAME, bootstrapAdmin.id), {
+      ...bootstrapAdmin,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
-  });
-  await withTimeout(batch.commit(), FIREBASE_TIMEOUT_MS);
+    }),
+    FIREBASE_TIMEOUT_MS,
+  );
 };
 
 export const subscribeUsers = (
@@ -181,7 +188,7 @@ export const subscribeUsers = (
 
   void ensureFirebaseAuth().catch((error: Error) => {
     onError?.(error);
-    onChange(readLocalUsers());
+    onChange([]);
   });
 
   const collectionRef = collection(firestore, COLLECTION_NAME);
@@ -192,7 +199,7 @@ export const subscribeUsers = (
     },
     (error) => {
       onError?.(error);
-      onChange(readLocalUsers());
+      onChange([]);
     },
   );
 };

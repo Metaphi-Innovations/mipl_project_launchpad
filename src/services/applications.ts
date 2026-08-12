@@ -2,24 +2,19 @@ import {
   collection,
   deleteDoc,
   doc,
-  getDocs,
-  limit,
   onSnapshot,
   orderBy,
   query,
   serverTimestamp,
   setDoc,
-  writeBatch,
   type DocumentData,
 } from 'firebase/firestore';
-import { SEED_APPLICATIONS } from '../data/seedApplications';
 import type { ApplicationCredential, LaunchpadApplication, NewApplicationInput } from '../types';
 import { db, ensureFirebaseAuth } from './firebase';
 
 const COLLECTION_NAME = 'launchpadApplications';
 const LOCAL_STORAGE_KEY = 'metaphi-launchpad-applications';
 const FIREBASE_TIMEOUT_MS = 8000;
-const seedById = new Map(SEED_APPLICATIONS.map((application) => [application.id, application]));
 
 const sortApplications = (apps: LaunchpadApplication[]) =>
   [...apps].sort((left, right) => left.order - right.order || left.name.localeCompare(right.name));
@@ -122,11 +117,10 @@ const isCredentialOnlyDescription = (description: string) => {
 
 const normalizeApplication = (application: LaunchpadApplication): LaunchpadApplication => {
   const extracted = extractCredentials(application.description);
-  const seedApplication = seedById.get(application.id);
   const credentials = normalizeCredentials(
     application.credentials,
-    application.username || extracted.username || seedApplication?.username,
-    application.password || extracted.password || seedApplication?.password,
+    application.username || extracted.username,
+    application.password || extracted.password,
   );
   const primaryCredential = firstCredential(credentials);
   const username = primaryCredential?.username || undefined;
@@ -208,13 +202,13 @@ const formatFirebaseError = (error: unknown, action: string) => {
 
 const readLocalApplications = () => {
   if (!canUseStorage()) {
-    return SEED_APPLICATIONS;
+    return [];
   }
 
   const stored = window.localStorage.getItem(LOCAL_STORAGE_KEY);
   if (!stored) {
-    window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(SEED_APPLICATIONS));
-    return SEED_APPLICATIONS;
+    window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify([]));
+    return [];
   }
 
   try {
@@ -224,8 +218,8 @@ const readLocalApplications = () => {
     window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(applications));
     return applications;
   } catch {
-    window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(SEED_APPLICATIONS));
-    return SEED_APPLICATIONS;
+    window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify([]));
+    return [];
   }
 };
 
@@ -278,7 +272,7 @@ const makeUpdatedApplication = (
   };
 };
 
-export const ensureSeedData = async () => {
+export const ensureApplicationData = async () => {
   const firestore = db;
 
   if (!firestore) {
@@ -287,22 +281,6 @@ export const ensureSeedData = async () => {
   }
 
   await ensureFirebaseAuth();
-  const collectionRef = collection(firestore, COLLECTION_NAME);
-  const existing = await withTimeout(getDocs(query(collectionRef, limit(1))), FIREBASE_TIMEOUT_MS);
-
-  if (!existing.empty) {
-    return;
-  }
-
-  const batch = writeBatch(firestore);
-  SEED_APPLICATIONS.forEach((application) => {
-    batch.set(doc(firestore, COLLECTION_NAME, application.id), {
-      ...application,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-  });
-  await withTimeout(batch.commit(), FIREBASE_TIMEOUT_MS);
 };
 
 export const subscribeApplications = (
@@ -326,7 +304,7 @@ export const subscribeApplications = (
 
   void ensureFirebaseAuth().catch((error: Error) => {
     onError?.(error);
-    onChange(readLocalApplications());
+    onChange([]);
   });
 
   const collectionRef = collection(firestore, COLLECTION_NAME);
@@ -337,7 +315,7 @@ export const subscribeApplications = (
     },
     (error) => {
       onError?.(error);
-      onChange(readLocalApplications());
+      onChange([]);
     },
   );
 };

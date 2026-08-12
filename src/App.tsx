@@ -24,11 +24,10 @@ import {
   type FormEvent,
   type SetStateAction,
 } from 'react';
-import { SEED_APPLICATIONS } from './data/seedApplications';
 import {
   createApplication,
   deleteApplication,
-  ensureSeedData,
+  ensureApplicationData,
   makeApplicationFromInput,
   subscribeApplications,
   updateApplication,
@@ -36,7 +35,6 @@ import {
 import {
   authenticateUser,
   createUser,
-  DEFAULT_USERS,
   deleteUser,
   ensureUserData,
   subscribeUsers,
@@ -117,10 +115,7 @@ const getStoredUser = (): CurrentUser | null => {
   }
 
   if (sessionStorage.getItem(LEGACY_AUTH_KEY) === 'true') {
-    const legacyUser = toCurrentUser(DEFAULT_USERS[0]);
-    sessionStorage.setItem(AUTH_KEY, JSON.stringify(legacyUser));
     sessionStorage.removeItem(LEGACY_AUTH_KEY);
-    return legacyUser;
   }
 
   return null;
@@ -205,8 +200,8 @@ function App() {
   const [loginPassword, setLoginPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
-  const [applications, setApplications] = useState<LaunchpadApplication[]>(SEED_APPLICATIONS);
-  const [users, setUsers] = useState<LaunchpadUser[]>(DEFAULT_USERS);
+  const [applications, setApplications] = useState<LaunchpadApplication[]>([]);
+  const [users, setUsers] = useState<LaunchpadUser[]>([]);
   const [dataError, setDataError] = useState('');
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [form, setForm] = useState<NewApplicationInput>(() => createEmptyApplicationForm());
@@ -238,7 +233,7 @@ function App() {
     let unsubscribeUsers: undefined | (() => void);
     let isCancelled = false;
 
-    Promise.allSettled([ensureSeedData(), ensureUserData()])
+    Promise.allSettled([ensureApplicationData(), ensureUserData()])
       .then((results) => {
         if (isCancelled) {
           return;
@@ -255,7 +250,7 @@ function App() {
 
         unsubscribeApplications = subscribeApplications(
           (items) => {
-            setApplications(items.length > 0 ? items : SEED_APPLICATIONS);
+            setApplications(items);
           },
           (error) => {
             setDataError(error.message);
@@ -264,7 +259,7 @@ function App() {
 
         unsubscribeUsers = subscribeUsers(
           (items) => {
-            setUsers(items.length > 0 ? items : DEFAULT_USERS);
+            setUsers(items);
             setCurrentUser((current) => {
               if (!current) {
                 return current;
@@ -707,15 +702,7 @@ function App() {
             {isLoginLoading ? 'Logging in...' : 'Login'}
           </button>
 
-          <div className="demo-credentials">
-            <p>Default Demo Credentials:</p>
-            {DEFAULT_USERS.map((user) => (
-              <div key={user.email}>
-                <span>{user.role === 'admin' ? 'Admin:' : 'User:'}</span>
-                <strong>{user.email} / {user.password}</strong>
-              </div>
-            ))}
-          </div>
+          <p className="login-helper">Use the admin account configured in Firebase.</p>
         </form>
         <Notifications message={notification} />
       </div>
@@ -868,7 +855,9 @@ function App() {
                 ))}
               </section>
             ) : (
-              <div className="empty-state">No projects found in this tab.</div>
+              <div className="empty-state">
+                {projectSearch.trim() ? 'No projects match your search.' : 'No projects added yet.'}
+              </div>
             )}
           </>
         ) : null}

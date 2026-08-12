@@ -1433,42 +1433,13 @@ button {
   font-weight: 600;
 }
 
-.demo-credentials {
-  padding-top: 26px;
-  margin-top: 28px;
+.login-helper {
+  padding-top: 20px;
+  margin: 24px 0 0;
+  color: #667085;
+  font-size: 13px;
+  text-align: center;
   border-top: 1px solid #edf0f6;
-}
-
-.demo-credentials p {
-  margin: 0 0 12px;
-  color: #667085;
-  font-size: 13px;
-}
-
-.demo-credentials div {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 9px 10px;
-  color: #667085;
-  font-size: 13px;
-  background: #f8f9ff;
-  border: 1px solid #e6e9f2;
-}
-
-.demo-credentials div:first-of-type {
-  border-radius: 8px 8px 0 0;
-}
-
-.demo-credentials div:last-of-type {
-  border-top: 0;
-  border-radius: 0 0 8px 8px;
-}
-
-.demo-credentials strong {
-  color: #101828;
-  font-weight: 600;
 }
 
 @media (max-width: 1240px) {
