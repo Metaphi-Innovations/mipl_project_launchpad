@@ -1,5 +1,6 @@
 export type ApplicationType = 'Wireframe' | 'Prototype' | 'Staged Application' | 'Deployed';
 export type UserRole = 'admin' | 'user';
+export type ResumeType = 'intern' | 'fresher' | 'experienced';
 
 export interface ApplicationCredential {
   id: string;
@@ -53,4 +54,19 @@ export interface NewUserInput {
   password: string;
   role: UserRole;
   mappedAppIds: string[];
+}
+
+export interface JobDescription {
+  id: string;
+  title: string;
+  slug: string;
+  resumeType: ResumeType;
+  content: string;
+  order: number;
+}
+
+export interface NewJobDescriptionInput {
+  title: string;
+  resumeType: ResumeType;
+  content: string;
 }

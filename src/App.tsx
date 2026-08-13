@@ -5,6 +5,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  FileText,
   LayoutGrid,
   LogOut,
   Pencil,
@@ -33,6 +34,15 @@ import {
   updateApplication,
 } from './services/applications';
 import {
+  createJobDescription,
+  deleteJobDescription,
+  ensureJobDescriptionData,
+  getJobDescriptionBySlug,
+  makeJobDescriptionFromInput,
+  subscribeJobDescriptions,
+  updateJobDescription,
+} from './services/jobDescriptions';
+import {
   authenticateUser,
   createUser,
   deleteUser,
@@ -45,18 +55,25 @@ import type {
   ApplicationType,
   ApplicationCredential,
   CurrentUser,
+  JobDescription,
   LaunchpadApplication,
   LaunchpadUser,
   NewApplicationInput,
+  NewJobDescriptionInput,
   NewUserInput,
+  ResumeType,
 } from './types';
 
 const AUTH_KEY = 'metaphi-launchpad-current-user';
 const LEGACY_AUTH_KEY = 'metaphi-launchpad-authenticated';
 const TYPES: ApplicationType[] = ['Wireframe', 'Prototype', 'Staged Application', 'Deployed'];
 const APPLICATION_TABS = ['All', ...TYPES] as const;
-type ActiveView = 'launcher' | 'applications' | 'users';
+const RESUME_TYPES: ResumeType[] = ['intern', 'fresher', 'experienced'];
+const JOB_DESCRIPTION_TABS = ['All', ...RESUME_TYPES] as const;
+type ActiveView = 'launcher' | 'applications' | 'users' | 'jobs';
 type ApplicationTab = (typeof APPLICATION_TABS)[number];
+type JobDescriptionTab = (typeof JOB_DESCRIPTION_TABS)[number];
+type SharedJobStatus = 'idle' | 'loading' | 'ready' | 'not-found' | 'error';
 
 const typeMeta: Record<ApplicationType, { className: string; title: string }> = {
   Wireframe: {
@@ -75,6 +92,27 @@ const typeMeta: Record<ApplicationType, { className: string; title: string }> = 
     className: 'deployed',
     title: 'Deployed Applications',
   },
+};
+
+const resumeTypeMeta: Record<ResumeType, { className: string; title: string }> = {
+  intern: {
+    className: 'intern',
+    title: 'Intern',
+  },
+  fresher: {
+    className: 'fresher',
+    title: 'Fresher',
+  },
+  experienced: {
+    className: 'experienced',
+    title: 'Experienced',
+  },
+};
+
+const resumeTypeOrder: Record<ResumeType, number> = {
+  intern: 1,
+  fresher: 2,
+  experienced: 3,
 };
 
 const accentClasses = ['violet', 'mint', 'rose', 'cyan', 'green', 'pink', 'sky', 'amber'];
@@ -101,6 +139,17 @@ const emptyUserForm: NewUserInput = {
   password: '',
   role: 'user',
   mappedAppIds: [],
+};
+
+const createEmptyJobDescriptionForm = (): NewJobDescriptionInput => ({
+  title: '',
+  resumeType: 'intern',
+  content: '',
+});
+
+const getSharedJobSlugFromPath = () => {
+  const match = window.location.pathname.match(/^\/jobs\/([^/?#]+)/);
+  return match?.[1] ? decodeURIComponent(match[1]) : '';
 };
 
 const getStoredUser = (): CurrentUser | null => {
@@ -145,6 +194,12 @@ const toFormInput = (application: LaunchpadApplication): NewApplicationInput => 
     application.description === 'No description provided' ? '' : application.description,
 });
 
+const toJobDescriptionFormInput = (job: JobDescription): NewJobDescriptionInput => ({
+  title: job.title,
+  resumeType: job.resumeType,
+  content: job.content,
+});
+
 const mergeApplication = (
   applications: LaunchpadApplication[],
   nextApplication: LaunchpadApplication,
@@ -163,6 +218,32 @@ const mergeApplication = (
 
 const removeApplication = (applications: LaunchpadApplication[], applicationId: string) =>
   applications.filter((application) => application.id !== applicationId);
+
+const sortJobDescriptions = (jobs: JobDescription[]) =>
+  [...jobs].sort(
+    (left, right) =>
+      resumeTypeOrder[left.resumeType] - resumeTypeOrder[right.resumeType] ||
+      left.order - right.order ||
+      left.title.localeCompare(right.title),
+  );
+
+const mergeJobDescription = (
+  jobs: JobDescription[],
+  nextJob: JobDescription,
+) => {
+  const exists = jobs.some((job) => job.id === nextJob.id);
+  const nextJobs = exists
+    ? jobs.map((job) => (job.id === nextJob.id ? nextJob : job))
+    : [...jobs, nextJob];
+
+  return sortJobDescriptions(nextJobs);
+};
+
+const removeJobDescription = (jobs: JobDescription[], jobId: string) =>
+  jobs.filter((job) => job.id !== jobId);
+
+const getJobShareUrl = (job: JobDescription) =>
+  `${window.location.origin}/jobs/${encodeURIComponent(job.slug)}`;
 
 const getExternalUrl = (url?: string) => {
   const trimmed = url?.trim();
@@ -202,6 +283,7 @@ function App() {
   const [loginError, setLoginError] = useState('');
   const [applications, setApplications] = useState<LaunchpadApplication[]>([]);
   const [users, setUsers] = useState<LaunchpadUser[]>([]);
+  const [jobDescriptions, setJobDescriptions] = useState<JobDescription[]>([]);
   const [dataError, setDataError] = useState('');
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [form, setForm] = useState<NewApplicationInput>(() => createEmptyApplicationForm());
@@ -210,6 +292,11 @@ function App() {
   const [isUserModalOpen, setIsUserModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<LaunchpadUser | null>(null);
   const [userForm, setUserForm] = useState<NewUserInput>(emptyUserForm);
+  const [isJobModalOpen, setIsJobModalOpen] = useState(false);
+  const [editingJobDescription, setEditingJobDescription] = useState<JobDescription | null>(null);
+  const [jobDescriptionForm, setJobDescriptionForm] = useState<NewJobDescriptionInput>(() =>
+    createEmptyJobDescriptionForm(),
+  );
   const [isSelectOpen, setIsSelectOpen] = useState(false);
   const [isEditSelectOpen, setIsEditSelectOpen] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -219,10 +306,58 @@ function App() {
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
   const [activeView, setActiveView] = useState<ActiveView>('launcher');
   const [activeApplicationTab, setActiveApplicationTab] = useState<ApplicationTab>('All');
+  const [activeJobDescriptionTab, setActiveJobDescriptionTab] = useState<JobDescriptionTab>('All');
   const [projectSearch, setProjectSearch] = useState('');
+  const [sharedJobSlug, setSharedJobSlug] = useState(() => getSharedJobSlugFromPath());
+  const [sharedJobDescription, setSharedJobDescription] = useState<JobDescription | null>(null);
+  const [sharedJobStatus, setSharedJobStatus] = useState<SharedJobStatus>('idle');
+  const [sharedJobError, setSharedJobError] = useState('');
   const profileMenuRef = useRef<HTMLDivElement | null>(null);
   const isAuthenticated = Boolean(currentUser);
   const isAdmin = currentUser?.role === 'admin';
+
+  useEffect(() => {
+    const handlePopState = () => setSharedJobSlug(getSharedJobSlugFromPath());
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (!sharedJobSlug) {
+      setSharedJobDescription(null);
+      setSharedJobStatus('idle');
+      setSharedJobError('');
+      return undefined;
+    }
+
+    let isCancelled = false;
+    setSharedJobStatus('loading');
+    setSharedJobError('');
+
+    getJobDescriptionBySlug(sharedJobSlug)
+      .then((job) => {
+        if (isCancelled) {
+          return;
+        }
+
+        setSharedJobDescription(job);
+        setSharedJobStatus(job ? 'ready' : 'not-found');
+      })
+      .catch((error: Error) => {
+        if (isCancelled) {
+          return;
+        }
+
+        setSharedJobDescription(null);
+        setSharedJobStatus('error');
+        setSharedJobError(error.message);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [sharedJobSlug]);
 
   useEffect(() => {
     if (!isAuthenticated) {
@@ -231,20 +366,21 @@ function App() {
 
     let unsubscribeApplications: undefined | (() => void);
     let unsubscribeUsers: undefined | (() => void);
+    let unsubscribeJobDescriptions: undefined | (() => void);
     let isCancelled = false;
 
-    Promise.allSettled([ensureApplicationData(), ensureUserData()])
+    Promise.allSettled([ensureApplicationData(), ensureUserData(), ensureJobDescriptionData()])
       .then((results) => {
         if (isCancelled) {
           return;
         }
 
-        const failedSeed = results.find((result) => result.status === 'rejected');
-        if (failedSeed?.status === 'rejected') {
+        const failedSetup = results.find((result) => result.status === 'rejected');
+        if (failedSetup?.status === 'rejected') {
           setDataError(
-            failedSeed.reason instanceof Error
-              ? failedSeed.reason.message
-              : 'Unable to seed Firebase data',
+            failedSetup.reason instanceof Error
+              ? failedSetup.reason.message
+              : 'Unable to prepare Firebase data',
           );
         }
 
@@ -282,6 +418,15 @@ function App() {
             setDataError(error.message);
           },
         );
+
+        unsubscribeJobDescriptions = subscribeJobDescriptions(
+          (items) => {
+            setJobDescriptions(items);
+          },
+          (error) => {
+            setDataError(error.message);
+          },
+        );
       })
       .catch((error: Error) => {
         setDataError(error.message);
@@ -291,6 +436,7 @@ function App() {
       isCancelled = true;
       unsubscribeApplications?.();
       unsubscribeUsers?.();
+      unsubscribeJobDescriptions?.();
     };
   }, [isAuthenticated]);
 
@@ -374,6 +520,14 @@ function App() {
 
     return searchedApplications.filter((application) => application.type === activeApplicationTab);
   }, [activeApplicationTab, searchedApplications]);
+
+  const tabJobDescriptions = useMemo(() => {
+    if (activeJobDescriptionTab === 'All') {
+      return jobDescriptions;
+    }
+
+    return jobDescriptions.filter((job) => job.resumeType === activeJobDescriptionTab);
+  }, [activeJobDescriptionTab, jobDescriptions]);
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -496,6 +650,103 @@ function App() {
     }
   };
 
+  const openAddJobDescriptionModal = () => {
+    if (!isAdmin) {
+      setNotification('Only admins can create job descriptions');
+      return;
+    }
+
+    setJobDescriptionForm(createEmptyJobDescriptionForm());
+    setEditingJobDescription(null);
+    setIsJobModalOpen(true);
+  };
+
+  const openEditJobDescriptionModal = (job: JobDescription) => {
+    if (!isAdmin) {
+      setNotification('Only admins can edit job descriptions');
+      return;
+    }
+
+    setEditingJobDescription(job);
+    setJobDescriptionForm(toJobDescriptionFormInput(job));
+    setIsJobModalOpen(true);
+  };
+
+  const closeJobDescriptionModal = () => {
+    setIsJobModalOpen(false);
+    setEditingJobDescription(null);
+    setJobDescriptionForm(createEmptyJobDescriptionForm());
+  };
+
+  const handleSaveJobDescription = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!isAdmin) {
+      setNotification('Only admins can manage job descriptions');
+      return;
+    }
+
+    if (!jobDescriptionForm.title.trim() || !jobDescriptionForm.content.trim()) {
+      return;
+    }
+
+    setIsSaving(true);
+    let createdJob: JobDescription | null = null;
+    try {
+      if (editingJobDescription) {
+        const updated = await updateJobDescription(editingJobDescription, jobDescriptionForm);
+        setJobDescriptions((current) => mergeJobDescription(current, updated));
+        setActiveJobDescriptionTab(updated.resumeType);
+        setNotification('Job description updated successfully');
+      } else {
+        const created = makeJobDescriptionFromInput(jobDescriptionForm);
+        createdJob = created;
+        setJobDescriptions((current) => mergeJobDescription(current, created));
+        setActiveJobDescriptionTab(created.resumeType);
+        setNotification('Saving job description...');
+        await createJobDescription(jobDescriptionForm, created);
+        setNotification('Job description added successfully');
+      }
+
+      closeJobDescriptionModal();
+    } catch (error) {
+      if (createdJob) {
+        const failedJobId = createdJob.id;
+        setJobDescriptions((current) => removeJobDescription(current, failedJobId));
+      }
+      setNotification(error instanceof Error ? error.message : 'Unable to save job description');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteJobDescription = async (job: JobDescription) => {
+    if (!isAdmin) {
+      setNotification('Only admins can delete job descriptions');
+      return;
+    }
+
+    const shouldDelete = window.confirm(`Delete ${job.title}?`);
+    if (!shouldDelete) {
+      return;
+    }
+
+    const previousJobDescriptions = jobDescriptions;
+    setJobDescriptions((current) => removeJobDescription(current, job.id));
+    setNotification('Deleting job description...');
+
+    try {
+      await deleteJobDescription(job);
+      setNotification('Job description deleted successfully');
+    } catch (error) {
+      setJobDescriptions(previousJobDescriptions);
+      setNotification(error instanceof Error ? error.message : 'Unable to delete job description');
+    }
+  };
+
+  const openJobDescriptionShareLink = (job: JobDescription) => {
+    window.open(getJobShareUrl(job), '_blank', 'noopener,noreferrer');
+  };
+
   const handleMenuSelect = (view: ActiveView) => {
     if (view !== 'launcher' && !isAdmin) {
       setNotification('Only admins can access this section');
@@ -509,6 +760,7 @@ function App() {
     setSelectedApplication(null);
     closeEditModal();
     closeUserModal();
+    closeJobDescriptionModal();
   };
 
   const handleLogout = () => {
@@ -520,10 +772,13 @@ function App() {
     setIsProfileMenuOpen(false);
     setIsAddOpen(false);
     setIsUserModalOpen(false);
+    setIsJobModalOpen(false);
     setSelectedApplication(null);
     setEditingApplication(null);
+    setEditingJobDescription(null);
     setActiveView('launcher');
     setActiveApplicationTab('All');
+    setActiveJobDescriptionTab('All');
   };
 
   const resetAddForm = () => {
@@ -656,6 +911,16 @@ function App() {
     }
   };
 
+  if (sharedJobSlug) {
+    return (
+      <SharedJobDescriptionPage
+        error={sharedJobError}
+        job={sharedJobDescription}
+        status={sharedJobStatus}
+      />
+    );
+  }
+
   if (!isAuthenticated) {
     return (
       <div className="login-screen">
@@ -768,6 +1033,15 @@ function App() {
                     >
                       <Users size={16} />
                       Users & Access
+                    </button>
+                    <button
+                      className={`profile-menu-item ${activeView === 'jobs' ? 'active' : ''}`}
+                      type="button"
+                      role="menuitem"
+                      onClick={() => handleMenuSelect('jobs')}
+                    >
+                      <FileText size={16} />
+                      Job Descriptions
                     </button>
                   </>
                 ) : null}
@@ -882,6 +1156,20 @@ function App() {
             users={users}
           />
         ) : null}
+
+        {activeView === 'jobs' && isAdmin ? (
+          <JobDescriptionsManagementView
+            activeTab={activeJobDescriptionTab}
+            jobDescriptions={jobDescriptions}
+            tabJobDescriptions={tabJobDescriptions}
+            onAdd={openAddJobDescriptionModal}
+            onCopyLink={(job) => handleCopy('Job description link', getJobShareUrl(job))}
+            onDelete={handleDeleteJobDescription}
+            onEdit={openEditJobDescriptionModal}
+            onOpen={openJobDescriptionShareLink}
+            onTabChange={setActiveJobDescriptionTab}
+          />
+        ) : null}
       </main>
 
       {isAddOpen ? (
@@ -931,6 +1219,17 @@ function App() {
           onClose={closeUserModal}
           onSubmit={handleSaveUser}
           setForm={setUserForm}
+        />
+      ) : null}
+
+      {isJobModalOpen ? (
+        <JobDescriptionFormModal
+          form={jobDescriptionForm}
+          isSaving={isSaving}
+          mode={editingJobDescription ? 'edit' : 'create'}
+          onClose={closeJobDescriptionModal}
+          onSubmit={handleSaveJobDescription}
+          setForm={setJobDescriptionForm}
         />
       ) : null}
 
@@ -1260,6 +1559,251 @@ function UsersAccessView({
         {filteredUsers.length === 0 ? <div className="empty-state">No users found.</div> : null}
       </div>
     </section>
+  );
+}
+
+function JobDescriptionsManagementView({
+  activeTab,
+  jobDescriptions,
+  tabJobDescriptions,
+  onAdd,
+  onCopyLink,
+  onDelete,
+  onEdit,
+  onOpen,
+  onTabChange,
+}: {
+  activeTab: JobDescriptionTab;
+  jobDescriptions: JobDescription[];
+  tabJobDescriptions: JobDescription[];
+  onAdd: () => void;
+  onCopyLink: (job: JobDescription) => void;
+  onDelete: (job: JobDescription) => void;
+  onEdit: (job: JobDescription) => void;
+  onOpen: (job: JobDescription) => void;
+  onTabChange: (tab: JobDescriptionTab) => void;
+}) {
+  return (
+    <section className="management-view">
+      <div className="board-header management-header">
+        <div>
+          <h2>Job Descriptions</h2>
+          <p>Create shareable job descriptions for intern, fresher, and experienced resumes.</p>
+        </div>
+        <button className="primary-button add-button" type="button" onClick={onAdd}>
+          <Plus size={17} />
+          Add Job Description
+        </button>
+      </div>
+
+      <div className="application-tabs" role="tablist" aria-label="Resume type filters">
+        {JOB_DESCRIPTION_TABS.map((tab) => {
+          const tabCount =
+            tab === 'All'
+              ? jobDescriptions.length
+              : jobDescriptions.filter((job) => job.resumeType === tab).length;
+          const tabClass = tab === 'All' ? 'all' : resumeTypeMeta[tab].className;
+
+          return (
+            <button
+              key={tab}
+              className={`application-tab ${tabClass} ${activeTab === tab ? 'active' : ''}`}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab}
+              onClick={() => onTabChange(tab)}
+            >
+              <span>{tab === 'All' ? 'All' : resumeTypeMeta[tab].title}</span>
+              <strong>{tabCount}</strong>
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="management-table-shell">
+        <table className="management-table job-table">
+          <thead>
+            <tr>
+              <th>Job Description</th>
+              <th>Resume Type</th>
+              <th>Share Link</th>
+              <th className="actions-heading">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tabJobDescriptions.map((job, index) => (
+              <tr key={job.id}>
+                <td>
+                  <div className="app-cell">
+                    <span className={`initials-badge small ${accentClasses[index % accentClasses.length]}`}>
+                      {job.title.slice(0, 2).toUpperCase()}
+                    </span>
+                    <div>
+                      <strong>{job.title}</strong>
+                      <span>{job.content || 'No description added'}</span>
+                    </div>
+                  </div>
+                </td>
+                <td>
+                  <span className={`resume-pill ${resumeTypeMeta[job.resumeType].className}`}>
+                    {resumeTypeMeta[job.resumeType].title}
+                  </span>
+                </td>
+                <td>
+                  <span className="table-url">{getJobShareUrl(job)}</span>
+                </td>
+                <td>
+                  <div className="table-actions">
+                    <button
+                      className="table-action-button"
+                      type="button"
+                      aria-label={`Open ${job.title}`}
+                      title="Open Share Link"
+                      onClick={() => onOpen(job)}
+                    >
+                      <ExternalLink size={16} />
+                    </button>
+                    <button
+                      className="table-action-button"
+                      type="button"
+                      aria-label={`Copy link for ${job.title}`}
+                      title="Copy Share Link"
+                      onClick={() => onCopyLink(job)}
+                    >
+                      <Copy size={16} />
+                    </button>
+                    <button
+                      className="table-action-button"
+                      type="button"
+                      aria-label={`Edit ${job.title}`}
+                      title="Edit Job Description"
+                      onClick={() => onEdit(job)}
+                    >
+                      <Pencil size={16} />
+                    </button>
+                    <button
+                      className="table-action-button danger"
+                      type="button"
+                      aria-label={`Delete ${job.title}`}
+                      title="Delete Job Description"
+                      onClick={() => onDelete(job)}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        {tabJobDescriptions.length === 0 ? (
+          <div className="empty-state">No job descriptions added yet.</div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function JobDescriptionFormModal({
+  form,
+  isSaving,
+  mode,
+  onClose,
+  onSubmit,
+  setForm,
+}: {
+  form: NewJobDescriptionInput;
+  isSaving: boolean;
+  mode: 'create' | 'edit';
+  onClose: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  setForm: Dispatch<SetStateAction<NewJobDescriptionInput>>;
+}) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const title = mode === 'create' ? 'Add Job Description' : 'Edit Job Description';
+  const actionLabel = mode === 'create' ? 'Save Job Description' : 'Update Job Description';
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <form className="add-modal job-modal" aria-label={title} onSubmit={onSubmit}>
+        <button className="modal-close icon-button" type="button" aria-label="Close" onClick={onClose}>
+          <X size={21} />
+        </button>
+        <h2>{title}</h2>
+        <p>Write the job description text and choose the resume type.</p>
+
+        <div className="form-grid">
+          <label className="field-block">
+            <span>Job Title</span>
+            <input
+              autoFocus
+              className="input-control"
+              placeholder="e.g. Frontend Developer"
+              value={form.title}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, title: event.target.value }))
+              }
+            />
+          </label>
+
+          <label className="field-block">
+            <span>Resume Type</span>
+            <select
+              className="input-control native-select"
+              value={form.resumeType}
+              onChange={(event) =>
+                setForm((current) => ({
+                  ...current,
+                  resumeType: event.target.value as ResumeType,
+                }))
+              }
+            >
+              {RESUME_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {resumeTypeMeta[type].title}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field-block description-field">
+            <span>Job Description</span>
+            <textarea
+              className="textarea-control job-description-textarea"
+              placeholder="Enter the job description..."
+              value={form.content}
+              onChange={(event) =>
+                setForm((current) => ({ ...current, content: event.target.value }))
+              }
+            />
+          </label>
+        </div>
+
+        <div className="modal-actions">
+          <button className="secondary-button" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            className="save-button"
+            type="submit"
+            disabled={!form.title.trim() || !form.content.trim() || isSaving}
+          >
+            {isSaving ? 'Saving...' : actionLabel}
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 
@@ -1840,6 +2384,56 @@ function ProjectDetailsModal({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function SharedJobDescriptionPage({
+  error,
+  job,
+  status,
+}: {
+  error: string;
+  job: JobDescription | null;
+  status: SharedJobStatus;
+}) {
+  const renderContent = () => {
+    if (status === 'loading' || status === 'idle') {
+      return <div className="empty-state">Loading job description...</div>;
+    }
+
+    if (status === 'not-found') {
+      return <div className="empty-state">Job description not found.</div>;
+    }
+
+    if (status === 'error') {
+      return <div className="data-error">{error || 'Unable to load job description.'}</div>;
+    }
+
+    if (!job) {
+      return <div className="empty-state">Job description not found.</div>;
+    }
+
+    return (
+      <>
+        <div className="shared-job-heading">
+          <span className={`resume-pill ${resumeTypeMeta[job.resumeType].className}`}>
+            {resumeTypeMeta[job.resumeType].title}
+          </span>
+          <h1>{job.title}</h1>
+        </div>
+        <article className="shared-job-content">{job.content}</article>
+      </>
+    );
+  };
+
+  return (
+    <div className="shared-job-screen">
+      <header className="shared-job-topbar">
+        <img src="/metaphi-logo.png" alt="Metaphi" />
+        <span>Job Description</span>
+      </header>
+      <main className="shared-job-shell">{renderContent()}</main>
     </div>
   );
 }
