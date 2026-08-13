@@ -402,4 +402,3 @@ export const deleteApplication = async (applicationId: string) => {
     throw new Error(formatFirebaseError(error, 'deleting application'));
   }
 };
-
