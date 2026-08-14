@@ -14,6 +14,7 @@ const ALLOWED_TAGS = new Set([
   'h6',
   'hr',
   'i',
+  'img',
   'li',
   'ol',
   'p',
@@ -35,7 +36,8 @@ const ALLOWED_TAGS = new Set([
   'ul',
 ]);
 
-const DROP_TAGS = new Set(['iframe', 'img', 'link', 'meta', 'object', 'script', 'style', 'svg']);
+const DROP_TAGS = new Set(['iframe', 'link', 'meta', 'object', 'script', 'style', 'svg']);
+const MAX_INLINE_IMAGE_SOURCE_LENGTH = 700_000;
 
 const ALLOWED_STYLES = new Set([
   'background-color',
@@ -91,8 +93,18 @@ const sanitizeStyle = (style: string) =>
     .join('; ');
 
 const isSafeUrl = (value: string) => /^(https?:|mailto:|tel:|#|\/)/i.test(value.trim());
+const isSafeImageUrl = (value: string) => {
+  const trimmed = value.trim();
+  const isInlineImage =
+    trimmed.length <= MAX_INLINE_IMAGE_SOURCE_LENGTH &&
+    /^data:image\/(?:gif|jpe?g|png|webp);base64,[a-z0-9+/=\s]+$/i.test(trimmed);
+
+  return isInlineImage || /^(https?:|\/)/i.test(trimmed);
+};
 const isSafeTableSpan = (value: string) => /^[1-9]\d{0,2}$/.test(value.trim());
-const RICH_HTML_PATTERN = /<(?:a|b|blockquote|code|em|h[1-6]|i|li|ol|pre|strong|table|td|th|u|ul)\b/i;
+const sanitizeAttributeText = (value: string, maxLength = 180) =>
+  value.replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, maxLength);
+const RICH_HTML_PATTERN = /<(?:a|b|blockquote|code|em|h[1-6]|i|img|li|ol|pre|strong|table|td|th|u|ul)\b/i;
 const UNORDERED_LIST_PATTERN = /^\s*(?:[-*•●▪◦‣–—])\s+(.+)$/;
 const ORDERED_LIST_PATTERN = /^\s*\d+[\.)]\s+(.+)$/;
 
@@ -160,6 +172,20 @@ const sanitizeElement = (sourceElement: Element, targetDocument: Document) => {
       element.setAttribute('target', '_blank');
       element.setAttribute('rel', 'noreferrer');
     }
+  }
+
+  if (tagName === 'img') {
+    const src = sourceElement.getAttribute('src') || '';
+    if (!isSafeImageUrl(src)) {
+      return null;
+    }
+
+    element.setAttribute('src', src.trim());
+    element.setAttribute('alt', sanitizeAttributeText(sourceElement.getAttribute('alt') || ''));
+    if (sourceElement.getAttribute('data-banner') === 'true') {
+      element.setAttribute('data-banner', 'true');
+    }
+    return element;
   }
 
   if ((tagName === 'td' || tagName === 'th') && sourceElement.hasAttribute('colspan')) {

@@ -9,6 +9,9 @@ import {
   FileText,
   Heading1,
   Heading2,
+  Heading3,
+  Heading4,
+  ImagePlus,
   Italic,
   LayoutGrid,
   List,
@@ -30,6 +33,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ChangeEvent,
   type ClipboardEvent,
   type Dispatch,
   type FormEvent,
@@ -59,6 +63,7 @@ import {
   createUser,
   deleteUser,
   ensureUserData,
+  requestPasswordReset,
   subscribeUsers,
   toCurrentUser,
   updateUser,
@@ -88,6 +93,9 @@ const TYPES: ApplicationType[] = ['Wireframe', 'Prototype', 'Staged Application'
 const APPLICATION_TABS = ['All', ...TYPES] as const;
 const RESUME_TYPES: ResumeType[] = ['intern', 'fresher', 'experienced'];
 const JOB_DESCRIPTION_TABS = ['All', ...RESUME_TYPES] as const;
+const BANNER_IMAGE_MAX_WIDTH = 1440;
+const BANNER_IMAGE_MAX_HEIGHT = 420;
+const BANNER_IMAGE_QUALITY = 0.84;
 type ActiveView = 'launcher' | 'applications' | 'users' | 'jobs';
 type ApplicationTab = (typeof APPLICATION_TABS)[number];
 type JobDescriptionTab = (typeof JOB_DESCRIPTION_TABS)[number];
@@ -165,6 +173,57 @@ const createEmptyJobDescriptionForm = (): NewJobDescriptionInput => ({
   content: '',
   contentHtml: '',
 });
+
+const fileToBannerImageDataUrl = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    if (!/^image\/(?:gif|jpe?g|png|webp)$/i.test(file.type)) {
+      reject(new Error('Please choose a PNG, JPG, WebP, or GIF image.'));
+      return;
+    }
+
+    const reader = new FileReader();
+
+    reader.onerror = () => reject(new Error('Could not read the image file.'));
+    reader.onload = () => {
+      const image = new window.Image();
+
+      image.onerror = () => reject(new Error('Could not load the image file.'));
+      image.onload = () => {
+        const naturalWidth = image.naturalWidth || image.width;
+        const naturalHeight = image.naturalHeight || image.height;
+
+        if (!naturalWidth || !naturalHeight) {
+          reject(new Error('Could not read the image size.'));
+          return;
+        }
+
+        const scale = Math.min(
+          BANNER_IMAGE_MAX_WIDTH / naturalWidth,
+          BANNER_IMAGE_MAX_HEIGHT / naturalHeight,
+          1,
+        );
+        const width = Math.max(1, Math.round(naturalWidth * scale));
+        const height = Math.max(1, Math.round(naturalHeight * scale));
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
+
+        if (!context) {
+          reject(new Error('Could not prepare the image.'));
+          return;
+        }
+
+        canvas.width = width;
+        canvas.height = height;
+        context.fillStyle = '#ffffff';
+        context.fillRect(0, 0, width, height);
+        context.drawImage(image, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', BANNER_IMAGE_QUALITY));
+      };
+      image.src = String(reader.result || '');
+    };
+
+    reader.readAsDataURL(file);
+  });
 
 const getSharedJobSlugFromPath = () => {
   const match = window.location.pathname.match(/^\/jobs\/([^/?#]+)/);
@@ -301,6 +360,9 @@ function App() {
   const [loginPassword, setLoginPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loginError, setLoginError] = useState('');
+  const [isForgotPasswordOpen, setIsForgotPasswordOpen] = useState(false);
+  const [forgotPasswordEmail, setForgotPasswordEmail] = useState('');
+  const [isPasswordResetSubmitting, setIsPasswordResetSubmitting] = useState(false);
   const [applications, setApplications] = useState<LaunchpadApplication[]>([]);
   const [users, setUsers] = useState<LaunchpadUser[]>([]);
   const [jobDescriptions, setJobDescriptions] = useState<JobDescription[]>([]);
@@ -579,6 +641,32 @@ function App() {
       setLoginError(error instanceof Error ? error.message : 'Unable to connect to Firebase');
     } finally {
       setIsLoginLoading(false);
+    }
+  };
+
+  const openForgotPasswordModal = () => {
+    setForgotPasswordEmail(loginEmail);
+    setLoginError('');
+    setIsForgotPasswordOpen(true);
+  };
+
+  const closeForgotPasswordModal = () => {
+    setIsForgotPasswordOpen(false);
+    setForgotPasswordEmail('');
+  };
+
+  const handleForgotPasswordSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    setIsPasswordResetSubmitting(true);
+    try {
+      await requestPasswordReset(forgotPasswordEmail);
+      closeForgotPasswordModal();
+      setNotification('Password reset request submitted');
+    } catch (error) {
+      setNotification(error instanceof Error ? error.message : 'Unable to submit reset request');
+    } finally {
+      setIsPasswordResetSubmitting(false);
     }
   };
 
@@ -981,6 +1069,12 @@ function App() {
             </button>
           </div>
 
+          <div className="forgot-password-row">
+            <button className="forgot-password-button" type="button" onClick={openForgotPasswordModal}>
+              Forgot password?
+            </button>
+          </div>
+
           {loginError ? <div className="login-error">{loginError}</div> : null}
 
           <button className="primary-button login-button" type="submit" disabled={isLoginLoading}>
@@ -989,6 +1083,15 @@ function App() {
 
           {/* <p className="login-helper">Use the admin account configured in Firebase.</p> */}
         </form>
+        {isForgotPasswordOpen ? (
+          <ForgotPasswordModal
+            email={forgotPasswordEmail}
+            isSubmitting={isPasswordResetSubmitting}
+            onClose={closeForgotPasswordModal}
+            onSubmit={handleForgotPasswordSubmit}
+            setEmail={setForgotPasswordEmail}
+          />
+        ) : null}
         <Notifications message={notification} />
       </div>
     );
@@ -1836,6 +1939,7 @@ function RichTextEditor({
   placeholder: string;
 }) {
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const imageInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const editor = editorRef.current;
@@ -1857,7 +1961,8 @@ function RichTextEditor({
 
     const sanitizedHtml = sanitizeRichTextHtml(editor.innerHTML);
     const text = richTextToPlainText(sanitizedHtml);
-    const nextHtml = text ? sanitizedHtml : '';
+    const hasVisualContent = /<(?:hr|img|table)\b/i.test(sanitizedHtml);
+    const nextHtml = text || hasVisualContent ? sanitizedHtml : '';
 
     if (cleanDom && editor.innerHTML !== nextHtml) {
       editor.innerHTML = nextHtml;
@@ -1872,8 +1977,57 @@ function RichTextEditor({
     syncEditor();
   };
 
+  const applyBannerImage = async (file: File) => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    try {
+      const dataUrl = await fileToBannerImageDataUrl(file);
+      const existingBanner = editor.querySelector('img[data-banner="true"]');
+
+      if (existingBanner instanceof HTMLImageElement) {
+        existingBanner.setAttribute('src', dataUrl);
+        existingBanner.setAttribute('alt', 'Banner image');
+      } else {
+        const banner = document.createElement('p');
+        const image = document.createElement('img');
+
+        image.setAttribute('src', dataUrl);
+        image.setAttribute('alt', 'Banner image');
+        image.setAttribute('data-banner', 'true');
+        banner.appendChild(image);
+        editor.prepend(banner);
+      }
+
+      editor.focus();
+      syncEditor(true);
+    } catch (error) {
+      console.error(error);
+    }
+  };
+
+  const handleBannerImageChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+
+    if (file) {
+      void applyBannerImage(file);
+    }
+  };
+
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    const pastedImage = Array.from(event.clipboardData.files).find((file) =>
+      /^image\/(?:gif|jpe?g|png|webp)$/i.test(file.type),
+    );
+
     event.preventDefault();
+
+    if (pastedImage) {
+      void applyBannerImage(pastedImage);
+      return;
+    }
 
     const pastedHtml = event.clipboardData.getData('text/html');
     const pastedText = event.clipboardData.getData('text/plain');
@@ -1891,6 +2045,12 @@ function RichTextEditor({
         </RichTextToolbarButton>
         <RichTextToolbarButton title="Heading 2" onClick={() => runCommand('formatBlock', 'h2')}>
           <Heading2 size={16} />
+        </RichTextToolbarButton>
+        <RichTextToolbarButton title="Heading 3" onClick={() => runCommand('formatBlock', 'h3')}>
+          <Heading3 size={16} />
+        </RichTextToolbarButton>
+        <RichTextToolbarButton title="Heading 4" onClick={() => runCommand('formatBlock', 'h4')}>
+          <Heading4 size={16} />
         </RichTextToolbarButton>
         <RichTextToolbarButton title="Bold" onClick={() => runCommand('bold')}>
           <Bold size={16} />
@@ -1910,10 +2070,20 @@ function RichTextEditor({
         <RichTextToolbarButton title="Quote" onClick={() => runCommand('formatBlock', 'blockquote')}>
           <Quote size={16} />
         </RichTextToolbarButton>
+        <RichTextToolbarButton title="Add Banner Image" onClick={() => imageInputRef.current?.click()}>
+          <ImagePlus size={16} />
+        </RichTextToolbarButton>
         <RichTextToolbarButton title="Clear Formatting" onClick={() => runCommand('removeFormat')}>
           <RemoveFormatting size={16} />
         </RichTextToolbarButton>
       </div>
+      <input
+        ref={imageInputRef}
+        className="rich-text-image-input"
+        type="file"
+        accept="image/*"
+        onChange={handleBannerImageChange}
+      />
       <div
         ref={editorRef}
         className="rich-text-editor rich-text-output"
@@ -2567,28 +2737,74 @@ function SharedJobDescriptionPage({
     const contentHtml = normalizeRichTextHtml(job.contentHtml, job.content);
 
     return (
-      <>
-        <div className="shared-job-heading">
-          <span className={`resume-pill ${resumeTypeMeta[job.resumeType].className}`}>
-            {resumeTypeMeta[job.resumeType].title}
-          </span>
-          <h1>{job.title}</h1>
-        </div>
-        <article
-          className="shared-job-content rich-text-output"
-          dangerouslySetInnerHTML={{ __html: contentHtml }}
-        />
-      </>
+      <article
+        className="shared-job-content rich-text-output"
+        dangerouslySetInnerHTML={{ __html: contentHtml }}
+      />
     );
   };
 
   return (
     <div className="shared-job-screen">
-      <header className="shared-job-topbar">
-        <img src="/metaphi-logo.png" alt="Metaphi" />
-        <span>Job Description</span>
-      </header>
       <main className="shared-job-shell">{renderContent()}</main>
+    </div>
+  );
+}
+
+function ForgotPasswordModal({
+  email,
+  isSubmitting,
+  onClose,
+  onSubmit,
+  setEmail,
+}: {
+  email: string;
+  isSubmitting: boolean;
+  onClose: () => void;
+  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
+  setEmail: Dispatch<SetStateAction<string>>;
+}) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="modal-backdrop" role="presentation">
+      <form className="add-modal forgot-modal" aria-label="Forgot password" onSubmit={onSubmit}>
+        <button className="modal-close icon-button" type="button" aria-label="Close" onClick={onClose}>
+          <X size={21} />
+        </button>
+        <h2>Forgot Password</h2>
+        <p>Enter your account email and an admin will review the reset request.</p>
+
+        <label className="field-block">
+          <span>Email</span>
+          <input
+            autoFocus
+            className="input-control"
+            // placeholder="name@metaphi.in"
+            type="email"
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+          />
+        </label>
+
+        <div className="modal-actions">
+          <button className="secondary-button" type="button" onClick={onClose}>
+            Cancel
+          </button>
+          <button className="save-button" type="submit" disabled={!email.trim() || isSubmitting}>
+            {isSubmitting ? 'Submitting...' : 'Submit Request'}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

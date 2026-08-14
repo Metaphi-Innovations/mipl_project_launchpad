@@ -1,4 +1,5 @@
 import {
+  addDoc,
   collection,
   deleteDoc,
   doc,
@@ -15,7 +16,9 @@ import type { CurrentUser, LaunchpadUser, NewUserInput, UserRole } from '../type
 import { db, ensureFirebaseAuth } from './firebase';
 
 const COLLECTION_NAME = 'launchpadUsers';
+const RESET_REQUEST_COLLECTION_NAME = 'launchpadPasswordResetRequests';
 const LOCAL_STORAGE_KEY = 'metaphi-launchpad-users';
+const RESET_REQUEST_STORAGE_KEY = 'metaphi-launchpad-password-reset-requests';
 const FIREBASE_TIMEOUT_MS = 8000;
 
 const slugify = (value: string) =>
@@ -49,11 +52,11 @@ const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number): Promise<
     }),
   ]);
 
-const formatFirebaseError = (error: unknown, action: string) => {
+const formatFirebaseError = (error: unknown, action: string, collectionName = COLLECTION_NAME) => {
   const message = error instanceof Error ? error.message : String(error);
 
   if (/permission|insufficient/i.test(message)) {
-    return `Firebase permission denied while ${action}. Update Firestore rules for ${COLLECTION_NAME}.`;
+    return `Firebase permission denied while ${action}. Update Firestore rules for ${collectionName}.`;
   }
 
   if (/timed out/i.test(message)) {
@@ -127,6 +130,28 @@ const writeLocalUsers = (users: LaunchpadUser[]) => {
   if (canUseStorage()) {
     window.localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(sortUsers(users)));
   }
+};
+
+const writeLocalPasswordResetRequest = (email: string) => {
+  if (!canUseStorage()) {
+    return;
+  }
+
+  const stored = window.localStorage.getItem(RESET_REQUEST_STORAGE_KEY);
+  let requests: unknown[] = [];
+
+  try {
+    requests = stored ? (JSON.parse(stored) as unknown[]) : [];
+  } catch {
+    requests = [];
+  }
+
+  requests.push({
+    email,
+    requestedAt: new Date().toISOString(),
+    status: 'pending',
+  });
+  window.localStorage.setItem(RESET_REQUEST_STORAGE_KEY, JSON.stringify(requests));
 };
 
 export const toCurrentUser = (user: LaunchpadUser): CurrentUser => ({
@@ -234,6 +259,44 @@ export const authenticateUser = async (email: string, password: string) => {
       (user) => user.email.toLowerCase() === normalizedEmail && user.password === normalizedPassword,
     ) || null
   );
+};
+
+export const requestPasswordReset = async (email: string) => {
+  const firestore = db;
+  const normalizedEmail = email.trim().toLowerCase();
+
+  if (!normalizedEmail) {
+    throw new Error('Email is required');
+  }
+
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+    throw new Error('Enter a valid email address');
+  }
+
+  if (!firestore) {
+    writeLocalPasswordResetRequest(normalizedEmail);
+    return;
+  }
+
+  await ensureFirebaseAuth();
+  try {
+    await withTimeout(
+      addDoc(collection(firestore, RESET_REQUEST_COLLECTION_NAME), {
+        email: normalizedEmail,
+        status: 'pending',
+        requestedAt: serverTimestamp(),
+      }),
+      FIREBASE_TIMEOUT_MS,
+    );
+  } catch (error) {
+    throw new Error(
+      formatFirebaseError(
+        error,
+        'submitting password reset request',
+        RESET_REQUEST_COLLECTION_NAME,
+      ),
+    );
+  }
 };
 
 const makeUserFromInput = (input: NewUserInput, existing?: LaunchpadUser): LaunchpadUser => {

@@ -1366,6 +1366,10 @@ button {
   background: #f3f5ff;
 }
 
+.rich-text-image-input {
+  display: none;
+}
+
 .rich-text-editor {
   min-height: 0;
   flex: 1;
@@ -1412,9 +1416,29 @@ button {
   font-size: 18px;
 }
 
+.rich-text-output h4 {
+  font-size: 16px;
+}
+
 .rich-text-output p,
 .rich-text-output div {
   margin: 0 0 12px;
+}
+
+.rich-text-output img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 14px 0;
+  border-radius: 8px;
+}
+
+.rich-text-output img[data-banner='true'] {
+  width: 100%;
+  max-height: 320px;
+  object-fit: cover;
+  margin: 0 0 18px;
+  border-radius: 10px;
 }
 
 .rich-text-output ul,
@@ -1572,11 +1596,12 @@ button {
 .save-button {
   min-width: 168px;
   color: #ffffff;
-  background: #6b7280;
+  background: #5b6cff;
+  box-shadow: 0 12px 26px rgba(91, 108, 255, 0.24);
 }
 
 .save-button:hover:not(:disabled) {
-  background: #4b5563;
+  background: #4a5ae0;
 }
 
 .save-button:disabled {
@@ -1659,9 +1684,29 @@ button {
   color: #667085;
 }
 
+.forgot-password-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+.forgot-password-button {
+  padding: 0;
+  color: #5b6cff;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  background: transparent;
+}
+
+.forgot-password-button:hover {
+  color: #4a5ae0;
+  text-decoration: underline;
+}
+
 .login-button {
   width: 100%;
-  margin-top: 22px;
+  margin-top: 18px;
 }
 
 .login-error {
@@ -1680,48 +1725,26 @@ button {
   border-top: 1px solid #edf0f6;
 }
 
+.forgot-modal {
+  width: min(430px, calc(100vw - 48px));
+  min-height: auto;
+}
+
+.forgot-modal .modal-actions {
+  position: static;
+  justify-content: flex-end;
+  margin-top: 28px;
+}
+
 .shared-job-screen {
   min-height: 100vh;
   background: #f8f9ff;
 }
 
-.shared-job-topbar {
-  display: flex;
-  height: 74px;
-  align-items: center;
-  gap: 14px;
-  padding: 0 32px;
-  background: #ffffff;
-  border-bottom: 1px solid #e5e7ef;
-}
-
-.shared-job-topbar img {
-  width: auto;
-  height: 36px;
-}
-
-.shared-job-topbar span {
-  color: #344054;
-  font-size: 14px;
-  font-weight: 600;
-}
-
 .shared-job-shell {
   width: min(940px, calc(100% - 40px));
-  padding: 42px 0 80px;
+  padding: 32px 0 80px;
   margin: 0 auto;
-}
-
-.shared-job-heading {
-  margin-bottom: 24px;
-}
-
-.shared-job-heading h1 {
-  margin: 14px 0 0;
-  color: #101828;
-  font-size: 34px;
-  font-weight: 700;
-  line-height: 1.16;
 }
 
 .shared-job-content {
@@ -1855,17 +1878,9 @@ button {
     max-height: none;
   }
 
-  .shared-job-topbar {
-    padding: 0 20px;
-  }
-
   .shared-job-shell {
     width: calc(100% - 40px);
-    padding-top: 30px;
-  }
-
-  .shared-job-heading h1 {
-    font-size: 28px;
+    padding-top: 24px;
   }
 
   .shared-job-content {
