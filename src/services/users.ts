@@ -249,8 +249,17 @@ export const authenticateUser = async (email: string, password: string) => {
         })(),
         4500,
       );
-    } catch {
-      users = readLocalUsers();
+    } catch (error) {
+      const localMatch = users.find(
+        (user) =>
+          user.email.toLowerCase() === normalizedEmail && user.password === normalizedPassword,
+      );
+
+      if (localMatch) {
+        return localMatch;
+      }
+
+      throw new Error(formatFirebaseError(error, 'signing in'));
     }
   }
 
