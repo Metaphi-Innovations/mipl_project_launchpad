@@ -1,4 +1,5 @@
 import {
+  Bold,
   Check,
   ChevronDown,
   Copy,
@@ -6,13 +7,21 @@ import {
   Eye,
   EyeOff,
   FileText,
+  Heading1,
+  Heading2,
+  Italic,
   LayoutGrid,
+  List,
+  ListOrdered,
   LogOut,
   Pencil,
   Plus,
+  Quote,
+  RemoveFormatting,
   Search,
   Settings,
   Trash2,
+  Underline,
   Users,
   X,
 } from 'lucide-react';
@@ -21,8 +30,11 @@ import {
   useMemo,
   useRef,
   useState,
+  type ClipboardEvent,
   type Dispatch,
   type FormEvent,
+  type ReactNode,
+  type MouseEvent as ReactMouseEvent,
   type SetStateAction,
 } from 'react';
 import {
@@ -51,6 +63,12 @@ import {
   toCurrentUser,
   updateUser,
 } from './services/users';
+import {
+  normalizeRichTextHtml,
+  plainTextToHtml,
+  richTextToPlainText,
+  sanitizeRichTextHtml,
+} from './utils/richText';
 import type {
   ApplicationType,
   ApplicationCredential,
@@ -145,6 +163,7 @@ const createEmptyJobDescriptionForm = (): NewJobDescriptionInput => ({
   title: '',
   resumeType: 'intern',
   content: '',
+  contentHtml: '',
 });
 
 const getSharedJobSlugFromPath = () => {
@@ -198,6 +217,7 @@ const toJobDescriptionFormInput = (job: JobDescription): NewJobDescriptionInput 
   title: job.title,
   resumeType: job.resumeType,
   content: job.content,
+  contentHtml: job.contentHtml || plainTextToHtml(job.content),
 });
 
 const mergeApplication = (
@@ -967,7 +987,7 @@ function App() {
             {isLoginLoading ? 'Logging in...' : 'Login'}
           </button>
 
-          <p className="login-helper">Use the admin account configured in Firebase.</p>
+          {/* <p className="login-helper">Use the admin account configured in Firebase.</p> */}
         </form>
         <Notifications message={notification} />
       </div>
@@ -1777,17 +1797,16 @@ function JobDescriptionFormModal({
             </select>
           </label>
 
-          <label className="field-block description-field">
+          <div className="field-block description-field">
             <span>Job Description</span>
-            <textarea
-              className="textarea-control job-description-textarea"
+            <RichTextEditor
+              html={form.contentHtml}
               placeholder="Enter the job description..."
-              value={form.content}
-              onChange={(event) =>
-                setForm((current) => ({ ...current, content: event.target.value }))
+              onChange={(contentHtml, content) =>
+                setForm((current) => ({ ...current, content, contentHtml }))
               }
             />
-          </label>
+          </div>
         </div>
 
         <div className="modal-actions">
@@ -1804,6 +1823,137 @@ function JobDescriptionFormModal({
         </div>
       </form>
     </div>
+  );
+}
+
+function RichTextEditor({
+  html,
+  onChange,
+  placeholder,
+}: {
+  html: string;
+  onChange: (html: string, text: string) => void;
+  placeholder: string;
+}) {
+  const editorRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || document.activeElement === editor) {
+      return;
+    }
+
+    const nextHtml = normalizeRichTextHtml(html);
+    if (editor.innerHTML !== nextHtml) {
+      editor.innerHTML = nextHtml;
+    }
+  }, [html]);
+
+  const syncEditor = (cleanDom = false) => {
+    const editor = editorRef.current;
+    if (!editor) {
+      return;
+    }
+
+    const sanitizedHtml = sanitizeRichTextHtml(editor.innerHTML);
+    const text = richTextToPlainText(sanitizedHtml);
+    const nextHtml = text ? sanitizedHtml : '';
+
+    if (cleanDom && editor.innerHTML !== nextHtml) {
+      editor.innerHTML = nextHtml;
+    }
+
+    onChange(nextHtml, text);
+  };
+
+  const runCommand = (command: string, value?: string) => {
+    editorRef.current?.focus();
+    document.execCommand(command, false, value);
+    syncEditor();
+  };
+
+  const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
+    event.preventDefault();
+
+    const pastedHtml = event.clipboardData.getData('text/html');
+    const pastedText = event.clipboardData.getData('text/plain');
+    const nextHtml = sanitizeRichTextHtml(pastedHtml || plainTextToHtml(pastedText));
+
+    document.execCommand('insertHTML', false, nextHtml);
+    syncEditor();
+  };
+
+  return (
+    <div className="rich-text-shell">
+      <div className="rich-text-toolbar" aria-label="Job description formatting tools">
+        <RichTextToolbarButton title="Heading 1" onClick={() => runCommand('formatBlock', 'h1')}>
+          <Heading1 size={16} />
+        </RichTextToolbarButton>
+        <RichTextToolbarButton title="Heading 2" onClick={() => runCommand('formatBlock', 'h2')}>
+          <Heading2 size={16} />
+        </RichTextToolbarButton>
+        <RichTextToolbarButton title="Bold" onClick={() => runCommand('bold')}>
+          <Bold size={16} />
+        </RichTextToolbarButton>
+        <RichTextToolbarButton title="Italic" onClick={() => runCommand('italic')}>
+          <Italic size={16} />
+        </RichTextToolbarButton>
+        <RichTextToolbarButton title="Underline" onClick={() => runCommand('underline')}>
+          <Underline size={16} />
+        </RichTextToolbarButton>
+        <RichTextToolbarButton title="Bulleted List" onClick={() => runCommand('insertUnorderedList')}>
+          <List size={16} />
+        </RichTextToolbarButton>
+        <RichTextToolbarButton title="Numbered List" onClick={() => runCommand('insertOrderedList')}>
+          <ListOrdered size={16} />
+        </RichTextToolbarButton>
+        <RichTextToolbarButton title="Quote" onClick={() => runCommand('formatBlock', 'blockquote')}>
+          <Quote size={16} />
+        </RichTextToolbarButton>
+        <RichTextToolbarButton title="Clear Formatting" onClick={() => runCommand('removeFormat')}>
+          <RemoveFormatting size={16} />
+        </RichTextToolbarButton>
+      </div>
+      <div
+        ref={editorRef}
+        className="rich-text-editor rich-text-output"
+        contentEditable
+        data-placeholder={placeholder}
+        role="textbox"
+        aria-label="Job Description"
+        aria-multiline="true"
+        suppressContentEditableWarning
+        onBlur={() => syncEditor(true)}
+        onInput={() => syncEditor()}
+        onPaste={handlePaste}
+      />
+    </div>
+  );
+}
+
+function RichTextToolbarButton({
+  children,
+  onClick,
+  title,
+}: {
+  children: ReactNode;
+  onClick: () => void;
+  title: string;
+}) {
+  const handleMouseDown = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+  };
+
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      onMouseDown={handleMouseDown}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -2414,6 +2564,8 @@ function SharedJobDescriptionPage({
       return <div className="empty-state">Job description not found.</div>;
     }
 
+    const contentHtml = normalizeRichTextHtml(job.contentHtml, job.content);
+
     return (
       <>
         <div className="shared-job-heading">
@@ -2422,7 +2574,10 @@ function SharedJobDescriptionPage({
           </span>
           <h1>{job.title}</h1>
         </div>
-        <article className="shared-job-content">{job.content}</article>
+        <article
+          className="shared-job-content rich-text-output"
+          dangerouslySetInnerHTML={{ __html: contentHtml }}
+        />
       </>
     );
   };

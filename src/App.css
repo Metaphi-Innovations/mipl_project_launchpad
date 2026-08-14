@@ -1009,9 +1009,9 @@ button {
   inset: 0;
   z-index: 80;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
-  padding-top: 54px;
+  padding: 24px;
   background: rgba(15, 23, 42, 0.48);
 }
 
@@ -1298,12 +1298,180 @@ button {
 }
 
 .job-modal {
-  min-height: 650px;
+  display: flex;
+  height: min(820px, calc(100vh - 48px));
+  width: min(980px, calc(100vw - 48px));
+  padding: 28px 28px 24px;
+  overflow: hidden;
+  flex-direction: column;
 }
 
-.job-description-textarea {
-  min-height: 270px;
-  line-height: 1.55;
+.job-modal > p {
+  margin-bottom: 28px;
+}
+
+.job-modal .form-grid {
+  flex: 1;
+  grid-template-rows: auto minmax(0, 1fr);
+  column-gap: 18px;
+  row-gap: 22px;
+  min-height: 0;
+}
+
+.job-modal .description-field {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.job-modal .modal-actions {
+  position: static;
+  justify-content: flex-end;
+  margin-top: 22px;
+}
+
+.rich-text-shell {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid #e1e5ee;
+  border-radius: 10px;
+}
+
+.rich-text-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 8px;
+  background: #fbfcff;
+  border-bottom: 1px solid #edf0f6;
+}
+
+.rich-text-toolbar button {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  color: #475467;
+  cursor: pointer;
+  background: transparent;
+  border-radius: 8px;
+}
+
+.rich-text-toolbar button:hover {
+  color: #5b6cff;
+  background: #f3f5ff;
+}
+
+.rich-text-editor {
+  min-height: 0;
+  flex: 1;
+  padding: 18px 20px;
+  overflow: auto;
+  color: #101828;
+  font-size: 15px;
+  font-weight: 400;
+  line-height: 1.65;
+  outline: none;
+}
+
+.rich-text-editor:focus {
+  box-shadow: inset 0 0 0 2px rgba(16, 24, 40, 0.1);
+}
+
+.rich-text-editor:empty::before {
+  color: #8a93a3;
+  content: attr(data-placeholder);
+  pointer-events: none;
+}
+
+.rich-text-output h1,
+.rich-text-output h2,
+.rich-text-output h3,
+.rich-text-output h4,
+.rich-text-output h5,
+.rich-text-output h6 {
+  margin: 1.1em 0 0.45em;
+  color: #101828;
+  font-weight: 650;
+  line-height: 1.22;
+}
+
+.rich-text-output h1 {
+  font-size: 28px;
+}
+
+.rich-text-output h2 {
+  font-size: 22px;
+}
+
+.rich-text-output h3 {
+  font-size: 18px;
+}
+
+.rich-text-output p,
+.rich-text-output div {
+  margin: 0 0 12px;
+}
+
+.rich-text-output ul,
+.rich-text-output ol {
+  padding-left: 24px;
+  margin: 0 0 14px;
+}
+
+.rich-text-output li {
+  margin: 5px 0;
+}
+
+.rich-text-output blockquote {
+  margin: 14px 0;
+  padding: 8px 0 8px 14px;
+  color: #475467;
+  border-left: 3px solid #cdd5ff;
+}
+
+.rich-text-output a {
+  color: #5b6cff;
+  text-decoration: underline;
+}
+
+.rich-text-output table {
+  width: 100%;
+  margin: 16px 0;
+  border-collapse: collapse;
+}
+
+.rich-text-output th,
+.rich-text-output td {
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: top;
+  border: 1px solid #dfe4ee;
+}
+
+.rich-text-output th {
+  background: #f8f9ff;
+  font-weight: 650;
+}
+
+.rich-text-output pre {
+  padding: 12px;
+  overflow: auto;
+  background: #f8f9ff;
+  border: 1px solid #edf0f6;
+  border-radius: 8px;
+}
+
+.rich-text-output > :first-child {
+  margin-top: 0;
+}
+
+.rich-text-output > :last-child {
+  margin-bottom: 0;
 }
 
 .mapped-apps-field {
@@ -1562,7 +1730,6 @@ button {
   color: #202939;
   font-size: 15px;
   line-height: 1.7;
-  white-space: pre-wrap;
   background: #ffffff;
   border: 1px solid #e6e9f2;
   border-radius: 12px;
@@ -1677,6 +1844,15 @@ button {
     position: static;
     justify-content: flex-end;
     margin-top: 28px;
+  }
+
+  .job-modal {
+    height: calc(100vh - 40px);
+  }
+
+  .rich-text-editor {
+    min-height: 0;
+    max-height: none;
   }
 
   .shared-job-topbar {

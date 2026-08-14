@@ -62,6 +62,7 @@ export interface JobDescription {
   slug: string;
   resumeType: ResumeType;
   content: string;
+  contentHtml: string;
   order: number;
 }
 
@@ -69,4 +70,5 @@ export interface NewJobDescriptionInput {
   title: string;
   resumeType: ResumeType;
   content: string;
+  contentHtml: string;
 }

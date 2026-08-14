@@ -11,6 +11,7 @@ import {
   type DocumentData,
 } from 'firebase/firestore';
 import type { JobDescription, NewJobDescriptionInput, ResumeType } from '../types';
+import { normalizeRichTextHtml, richTextToPlainText } from '../utils/richText';
 import { db, ensureFirebaseAuth } from './firebase';
 
 const COLLECTION_NAME = 'launchpadJobDescriptions';
@@ -70,14 +71,20 @@ const formatFirebaseError = (error: unknown, action: string) => {
   return message;
 };
 
-const mapJobDescription = (id: string, data: DocumentData): JobDescription => ({
-  id,
-  title: String(data.title || 'Untitled Job Description'),
-  slug: String(data.slug || id),
-  resumeType: normalizeResumeType(data.resumeType),
-  content: String(data.content || ''),
-  order: Number(data.order ?? Date.now()),
-});
+const mapJobDescription = (id: string, data: DocumentData): JobDescription => {
+  const content = String(data.content || '');
+  const contentHtml = normalizeRichTextHtml(String(data.contentHtml || ''), content);
+
+  return {
+    id,
+    title: String(data.title || 'Untitled Job Description'),
+    slug: String(data.slug || id),
+    resumeType: normalizeResumeType(data.resumeType),
+    content: content || richTextToPlainText(contentHtml),
+    contentHtml,
+    order: Number(data.order ?? Date.now()),
+  };
+};
 
 const readLocalJobDescriptions = () => {
   if (!canUseStorage()) {
@@ -115,13 +122,16 @@ export const makeJobDescriptionFromInput = (input: NewJobDescriptionInput): JobD
   const order = Date.now();
   const slugBase = slugify(title) || 'job-description';
   const slug = `${slugBase}-${order}-${Math.random().toString(36).slice(2, 8)}`;
+  const contentHtml = normalizeRichTextHtml(input.contentHtml, input.content);
+  const content = richTextToPlainText(contentHtml);
 
   return {
     id: slug,
     title,
     slug,
     resumeType: input.resumeType,
-    content: input.content.trim(),
+    content,
+    contentHtml,
     order,
   };
 };
@@ -129,12 +139,17 @@ export const makeJobDescriptionFromInput = (input: NewJobDescriptionInput): JobD
 const makeUpdatedJobDescription = (
   currentJob: JobDescription,
   input: NewJobDescriptionInput,
-): JobDescription => ({
-  ...currentJob,
-  title: input.title.trim(),
-  resumeType: input.resumeType,
-  content: input.content.trim(),
-});
+): JobDescription => {
+  const contentHtml = normalizeRichTextHtml(input.contentHtml, input.content);
+
+  return {
+    ...currentJob,
+    title: input.title.trim(),
+    resumeType: input.resumeType,
+    content: richTextToPlainText(contentHtml),
+    contentHtml,
+  };
+};
 
 export const ensureJobDescriptionData = async () => {
   const firestore = db;
